@@ -27,52 +27,39 @@ package serval
 // Nothing is searched. An entry is found by identity in one lookup, and serving
 // a scope is walking that many links from it -- forwards or backwards -- ending
 // at the run's own end, which is exactly where the guarantee ends.
-
-// The estimated cost of the parts a record is made of.
 //
-// These are for deciding when to evict, not for reporting memory, so what
-// matters is that they are CONSISTENT rather than exact: an entry's cost is
-// worked out once and kept, and eviction subtracts what insertion added. The
-// total then cannot drift however wrong the estimate is, and being wrong only
-// makes a byte limit nominal.
-//
-// The numbers are the real struct sizes rather than guesses -- a Value is
-// 72 bytes, a Field 24, an entry 96 -- rounded up for the allocator's size
-// class and the pointers that reach them. 0_cachedscope_test.go holds them to
-// within a factor of the heap they model, and fails when the shape of what is
-// held changes.
-const (
-	entryOverhead = 112 // an entry's own struct, its two links and its slot
-	fieldOverhead = 48  // one Field and the pointer to it
-	valueOverhead = 80  // a Value beyond whatever it carries
-)
+// **A run holds no fields.** An entry is a PLACE -- which record stands here,
+// and what stands either side of it -- and what that record holds is kept once
+// per source, in the table cachedrecord.go describes. So a run is an order and
+// nothing else, two runs of one sequence join wherever their ends meet, and the
+// fields a query asked for change nothing about the shape of what is held.
 
 // A cachedScopeID names one run. Entries carry it so that a record found by
 // identity says which guarantee it falls under without walking to find out.
 type cachedScopeID uint64
 
-// An entry is one record the cache holds, and its place in the run.
+// An entry is one record's PLACE in a run: which record stands here, and what
+// stands either side of it.
 type entry struct {
 	scope      cachedScopeID
 	prev, next *entry
 
-	id     *Value
-	fields Record
-	whole  bool // the record entire, rather than the fields one query asked for
+	id *Value
 
-	// cost is what this entry added to the cache's total, worked out once when
-	// it went in. Eviction subtracts this rather than measuring again: an entry
-	// whose fields were patched by an invalidation in between would otherwise
-	// give back a different number than it took.
-	cost int
+	// rec is what is known about the record standing here, which belongs to the
+	// source rather than to this sequence and is shared with every other data
+	// set that sequences it.
+	rec *cachedRecord
 
-	// gen is the generation of the data set this record was fetched at.
+	// cost is what this entry added to the cache's total: its own links and
+	// identity, and -- for the first place to point at a record -- what that
+	// record costs as well.
 	//
-	// Nothing reads it yet. It is what invalidation will compare against to know
-	// whether an entry predates a change, and it is here from the start because
-	// adding it afterwards leaves every entry already held with a generation
-	// nobody can work out.
-	gen uint64
+	// It moves when the record learns something, and when the place carrying
+	// the record's charge goes and this one takes it over. Either way it moves
+	// by exactly what changed, so eviction gives back exactly what filing took
+	// however wrong the estimate behind it is.
+	cost int
 
 	// hit is the tick this entry was last handed to somebody, and zero for one
 	// that never has been.
@@ -89,41 +76,23 @@ type entry struct {
 	// back touches every one of them exactly once, and each is the most recently
 	// used thing in the cache the moment it lands. Twice is evidence, and it is
 	// what divides the two segments -- see cache.go.
+	//
+	// It is the PLACE that is warm and not the record: what has proved itself
+	// is this reader coming back to this stretch of this sequence, and the same
+	// record standing somewhere else in another one has proved nothing.
 	warm bool
 }
 
-// newEntry is one record as an entry, costed once.
-func newEntry(id *Value, fields Record, whole bool, gen uint64) *entry {
-	return &entry{
-		id: id, fields: fields, whole: whole, gen: gen,
-		cost: costOf(id, fields),
+// newEntry is one place in a run, pointing at what is known about the record
+// standing there -- and taking on what that record costs where it is the first
+// place to point at it.
+func newEntry(rec *cachedRecord) *entry {
+	e := &entry{id: rec.id, rec: rec, cost: entryOverhead + costOfValue(rec.id)}
+	if len(rec.refs) == 0 {
+		e.cost += rec.cost
 	}
-}
-
-// costOf is what one record costs to hold.
-func costOf(id *Value, fields Record) int {
-	n := entryOverhead + costOfValue(id)
-	for _, f := range fields {
-		n += fieldOverhead + len(f.Name) + costOfValue(f.Value)
-	}
-	return n
-}
-
-// costOfValue is what one value costs, following a list into its members.
-func costOfValue(v *Value) int {
-	if v == nil {
-		return 0
-	}
-	n := valueOverhead
-	switch v.Kind {
-	case SymbolValue, TextValue, BytesValue:
-		n += len(v.Str)
-	case ListValue:
-		for _, f := range v.List {
-			n += fieldOverhead + len(f.Name) + costOfValue(f.Value)
-		}
-	}
-	return n
+	rec.refs = append(rec.refs, e)
+	return e
 }
 
 // A cachedScope is a run of one data set's records, guaranteed complete between
@@ -140,11 +109,6 @@ type cachedScope struct {
 	// one it is guaranteed TO, inclusive. Nil begin is the start of the sequence
 	// and nil end is the end of it -- both claims rather than gaps.
 	begin, end *Value
-
-	// carried is what this run's records hold, which is not always what a later
-	// query wants: a run fetched for `fields={ name }` cannot answer one asking
-	// for `size`.
-	carried Record
 
 	head, tail *entry
 	n          int
@@ -212,6 +176,21 @@ func (s *cachedScope) pushFront(e *entry) {
 	}
 }
 
+// retotal takes the run's figures again from what it holds.
+//
+// A run keeps its totals as it is built, so this is for the one case that gets
+// behind them: a run charged for a record while it was not yet in the table to
+// be charged through. See cache.hold.
+func (s *cachedScope) retotal() {
+	s.cost, s.cold = 0, 0
+	for e := s.head; e != nil; e = e.next {
+		s.cost += e.cost
+		if !e.warm {
+			s.cold += e.cost
+		}
+	}
+}
+
 // unlink takes one entry out and gives back what that freed.
 //
 // It says nothing about the guarantee. Taking a record out of the MIDDLE of a
@@ -256,11 +235,11 @@ func (s *cachedScope) splitAfter(at *entry, id cachedScopeID) *cachedScope {
 	at.next, rest.prev = nil, nil
 
 	left := &cachedScope{
-		set: s.set, begin: s.begin, end: at.id, carried: s.carried,
+		set: s.set, begin: s.begin, end: at.id,
 		head: s.head, tail: at,
 	}
 	right := &cachedScope{
-		set: s.set, begin: at.id, end: s.end, carried: s.carried,
+		set: s.set, begin: at.id, end: s.end,
 		head: rest, tail: s.tail,
 	}
 	for e := left.head; e != nil; e = e.next {
@@ -295,14 +274,12 @@ func (s *cachedScope) splitAfter(at *entry, id cachedScopeID) *cachedScope {
 // what two scopes answered back to back amount to: one link is made, and the
 // other run's entries are relabelled.
 //
-// Two runs carrying different fields never meet, however their ends line up: a
-// run answers a query by covering what it wants, and a run half of which holds
-// `name` and half `size` covers neither.
+// Which fields either answer asked for has nothing to say about it. A run is an
+// order, and two stretches of one order meet or they do not; what each record
+// holds is the source's business, and is the same copy whichever answer brought
+// it.
 func (s *cachedScope) merge(other *cachedScope) bool {
 	if s.set != other.set || s.end == nil || other.begin == nil {
-		return false
-	}
-	if !sameCarried(s.carried, other.carried) {
 		return false
 	}
 	if !Equal(s.end, other.begin) {

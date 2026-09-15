@@ -6,12 +6,19 @@ import (
 	"testing"
 )
 
-func ent(id int64) *entry {
-	return newEntry(NewInt(id), Record{
+// whole is one record as a source sending everything would hand it back.
+func whole(id int64) *cachedRecord {
+	return newRecord("files", NewInt(id), Record{
 		Named("name", fmt.Sprintf("file-%d", id)),
 		Named("size", id*10),
 	}, true, 0)
 }
+
+// ent is one place in a run and the record standing there. Outside the cache
+// nothing else points at that record, so the two are made together.
+func ent(id int64) *entry { return placed(whole(id)) }
+
+func placed(r *cachedRecord) *entry { return newEntry(r) }
 
 // run builds a cached scope holding the records from..to, guaranteed between
 // the ends given.
@@ -193,15 +200,6 @@ func TestRunsThatDoNotMeetDoNotJoin(t *testing.T) {
 	if tail.merge(run("files", nil, NewInt(2), 1, 2)) {
 		t.Error("the end of the sequence was joined to the start of it")
 	}
-	// Nor do two runs carrying different fields, however their ends line up: a
-	// run half of which holds `name` and half `size` covers neither.
-	named := run("files", nil, NewInt(3), 1, 3)
-	named.carried = Record{Named("name", 0)}
-	sized := run("files", NewInt(3), NewInt(5), 4, 5)
-	sized.carried = Record{Named("size", 0)}
-	if named.merge(sized) {
-		t.Error("runs carrying different fields were joined")
-	}
 }
 
 // A record the cache has let go of lets go of the cache.
@@ -221,6 +219,25 @@ func TestADroppedRecordDoesNotReachWhatIsStillHeld(t *testing.T) {
 	}
 	if got := ids(s.serve(dropped, 3, false)); got != "" {
 		t.Errorf("reading on from a dropped record served %s", got)
+	}
+}
+
+// And a place the cache has dropped lets go of what it knew, for the same
+// reason one step along: a place still pointing at a record would hold that
+// record's fields on the heap where nothing could reach them, so their cost
+// would come off the total and not off the heap.
+func TestADroppedPlaceDoesNotHoldOnToWhatItKnew(t *testing.T) {
+	c := newCache(1 << 20)
+	filed(c, over("files"), nil, wad(1, 3))
+
+	c.mu.Lock()
+	s := c.sets["files"][0]
+	dropped := s.head
+	c.drop(s, true)
+	c.mu.Unlock()
+
+	if dropped.rec != nil {
+		t.Error("a dropped place still points at what it knew")
 	}
 }
 
@@ -271,7 +288,7 @@ func TestAnEntrysCostIsWorkedOutOnceAndKept(t *testing.T) {
 
 	// Patched after it went in, as an invalidation would, it still costs what it
 	// cost.
-	s.head.fields = append(s.head.fields, Named("extra", "a much longer value"))
+	s.head.rec.fields = append(s.head.rec.fields, Named("extra", "a much longer value"))
 	if freed := s.trimFront(1); s.Cost()+freed != whole {
 		t.Errorf("a patched entry gave back %d of the %d it took", freed, whole-s.Cost())
 	}
@@ -300,6 +317,6 @@ func TestTheEstimateTracksTheRealHeap(t *testing.T) {
 	t.Logf("estimated %d bytes, the heap grew %d, ratio %.2f", s.Cost(), real, ratio)
 	if ratio < 0.5 || ratio > 2.0 {
 		t.Errorf("the estimate is %.2f of the real heap, too far off to cap "+
-			"anything by -- recalibrate the overheads in cachedscope.go", ratio)
+			"anything by -- recalibrate the overheads in cachedrecord.go", ratio)
 	}
 }

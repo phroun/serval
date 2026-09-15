@@ -10,6 +10,24 @@ package serval
 // meets another joins it, and a run asked for part of itself hands back a slice
 // of its own links.
 //
+// # Two tables, because there are two different things here
+//
+// Where a record STANDS belongs to a data set: a source, a sort and a filter
+// decide it between them, and change it between them. What a record HOLDS
+// belongs to the SOURCE: sort the same files by name and then by size and
+// record 7 carries the same fields in both.
+//
+// So they are kept apart. `sets` and `runs` hold the order -- runs of places,
+// with no fields in them at all -- and `recs` holds what each record is known
+// to carry, once per source, read by every data set drawing on it. See
+// cachedrecord.go.
+//
+// One run per stretch of a sequence follows from that, and it is what the split
+// was for: a stretch fetched for `fields={ name }` and the same stretch fetched
+// for `fields={ name; size }` used to be two runs that could not answer each
+// other's question and would not join. Now they are one run, and the second
+// answer teaches the records what the first one did not know.
+//
 // # Keeping the hot records against a cold flood
 //
 // The thing an LRU cannot do is survive a scan. Recency is only a proxy for
@@ -22,13 +40,15 @@ package serval
 // So there are two segments, which is the standard answer (segmented LRU, or
 // 2Q):
 //
-//   - Everything arrives on PROBATION. A record handed out once is no evidence
+//   - Every PLACE arrives on probation. A record handed out once is no evidence
 //     of anything -- a scan touches every record it passes exactly once.
-//   - A record handed out a SECOND time is warm, and moves to the protected
-//     segment.
+//   - A place handed out a SECOND time is warm, and moves to the protected
+//     segment. The place and not the record: what has proved itself is this
+//     reader coming back to this stretch of this sequence, and the same record
+//     standing somewhere else in another one has proved nothing.
 //   - Eviction always takes from probation. Not preferentially: entirely. A
-//     record that has proved itself is only ever touched once there is no
-//     probationary record left anywhere in the cache to take, and it is that
+//     place that has proved itself is only ever touched once there is no
+//     probationary place left anywhere in the cache to take, and it is that
 //     rule a flood cannot get around, however many records it pours in.
 //
 // Two caps keep either segment from swallowing the cache:
@@ -50,25 +70,23 @@ package serval
 //
 // # What is not here
 //
-// Invalidation. Entries carry a generation for it and runs can already be split
+// Invalidation. Records carry a generation for it and runs can already be split
 // and rejoined without re-querying, which is the machinery it will need, but
 // nothing yet decides that a held record is stale.
 //
-// While that is true, the cache refuses to hold an answer overlapping records
-// it already has: with no way to tell which copy is right, the one already
-// filed is kept and the new answer is dropped rather than held twice. Runs
-// carrying different fields are not an overlap -- those are different records
-// as far as the cache is concerned, and coexist.
+// While that is true, the cache refuses to hold an answer whose records already
+// stand somewhere in this sequence: with no way to tell which ORDER is right,
+// the one already filed is kept and the new answer is dropped rather than
+// placed twice. What those records HOLD is not refused the same way -- knowledge
+// only grows, and a second answer about a record already known adds to it.
 
 import (
-	"sort"
-	"strings"
 	"sync"
 )
 
 // defaultCacheLimit is what the cache holds until somebody says otherwise. A
-// nominal figure in the units costOf counts, which are close enough to bytes to
-// reason in.
+// nominal figure in the units cachedrecord.go counts, which are close enough to
+// bytes to reason in.
 const defaultCacheLimit = 64 << 20
 
 // The shares the two segments are held to, as numerator and denominator so that
@@ -82,6 +100,18 @@ const (
 // a program reading the same source, sort and filter are reading the same
 // sequence, and there is no reason for them to fetch it twice.
 var hot = newCache(defaultCacheLimit)
+
+// A dataSet names the two things a cached answer belongs to at once: the
+// sequence it is a stretch of, and the source its records came from.
+//
+// They are different keys because they key different things. Two data sets over
+// one source put its records in two different orders and share every one of
+// their values; two sources have nothing in common however alike their
+// sequences look.
+type dataSet struct {
+	source string // whose records these are
+	set    string // which sequence of them: source, sort and filter together
+}
 
 type cache struct {
 	mu sync.Mutex
@@ -99,11 +129,14 @@ type cache struct {
 	runs map[cachedScopeID]*cachedScope
 	sets map[string][]*cachedScope
 
-	// at finds a record by data set and identity in one lookup. The slice holds
-	// one entry per set of carried fields: a run fetched whole and a run fetched
-	// for `fields={ name }` may each hold their own copy of record 7, and they
-	// answer different questions.
-	at map[string][]*entry
+	// at finds a record's PLACE by data set and identity in one lookup. One
+	// place per data set: a record stands somewhere in a sequence or it does
+	// not, and a run never overlaps another of the same sequence.
+	at map[string]*entry
+
+	// recs finds what a record HOLDS by source and identity, which is what
+	// every data set over that source reads.
+	recs map[string]*cachedRecord
 }
 
 func newCache(limit int) *cache {
@@ -113,7 +146,8 @@ func newCache(limit int) *cache {
 
 		runs: map[cachedScopeID]*cachedScope{},
 		sets: map[string][]*cachedScope{},
-		at:   map[string][]*entry{},
+		at:   map[string]*entry{},
+		recs: map[string]*cachedRecord{},
 	}
 }
 
@@ -138,68 +172,28 @@ func (c *cache) SetLimit(n int) {
 	c.room(0)
 }
 
-// --- what is carried -----------------------------------------------------
-
-// covers reports whether a run holding `carried` can answer a query wanting
-// `wanted`. Covering rather than equal: a run that holds more than was asked
-// for answers the question, and one that holds the records entire answers any
-// question at all.
-func covers(carried, wanted Record) bool {
-	if carried == nil {
-		return true
-	}
-	if wanted == nil {
-		return false // the whole record was asked for; this run has part of one
-	}
-	for _, w := range wanted {
-		if !carried.Has(w.Name) {
-			return false
-		}
-	}
-	return true
-}
-
-// carriedKey spells a set of carried fields so two of them can be compared. The
-// names are a set and not a list -- `fields={ name size }` and
-// `fields={ size name }` ask for the same thing -- so they are sorted.
-func carriedKey(f Record) string {
-	if f == nil {
-		return "*"
-	}
-	names := append([]string(nil), f.Names()...)
-	sort.Strings(names)
-	return "=" + strings.Join(names, "\x00")
-}
-
-func sameCarried(a, b Record) bool { return carriedKey(a) == carriedKey(b) }
-
-// recordKey finds a record of one data set by identity.
-//
-// Key and not some spelling of the value: a table keyed by how a value is
-// WRITTEN depends on a grammar it has nothing to do with, and moves every key
-// it holds the day that grammar changes.
-func recordKey(set string, id *Value) string {
-	b := make([]byte, 0, len(set)+24)
-	b = append(append(b, set...), 0)
-	return string(AppendKey(b, id))
-}
-
 // --- answering -----------------------------------------------------------
 
 // serve answers a scope from what is held, or says it cannot.
 //
-// It answers only in FULL. A run that holds the first half of what was asked
-// for is no use: the query is asked once and answered once, so half an answer
-// would have to be stitched to a fetch for the rest, and the fetch has to
-// happen either way. So a hit is a walk that reached the count, reached
-// `until`, or reached the end of the sequence -- and falling off the end of the
-// RUN, which is where its guarantee stops and not where the records do, is a
-// miss.
-func (c *cache) serve(set string, wanted Record, sc *Scope) ([]*entry, Complete, bool) {
+// It answers only in FULL, and in two senses. The WALK has to have got where it
+// was going: a run holding the first half of what was asked for is no use,
+// because the query is asked once and answered once, so half an answer would
+// have to be stitched to a fetch for the rest and the fetch has to happen
+// either way. And every record the walk passed has to answer for the fields
+// wanted, because a stretch that knows `name` for all of them and `size` for
+// most is not an answer to a question about size.
+//
+// So a hit is a walk that reached the count, reached `until`, or reached the
+// end of the sequence, over records that are all known well enough. Falling off
+// the end of the RUN, which is where its guarantee stops and not where the
+// records do, is a miss -- and so is meeting a record that has not been asked
+// about in enough detail yet.
+func (c *cache) serve(ds dataSet, wanted Record, sc *Scope) ([]*entry, Complete, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	run, from := c.find(set, wanted, sc)
+	run, from := c.find(ds, sc)
 	if run == nil {
 		return nil, Complete{}, false
 	}
@@ -220,6 +214,12 @@ func (c *cache) serve(set string, wanted Record, sc *Scope) ([]*entry, Complete,
 		if sc.Until != nil && Equal(at.id, sc.Until) {
 			done.Stop = StopJoined
 			break
+		}
+		if !at.rec.answers(wanted) {
+			// The order is known and what stands here is not known well enough.
+			// Which is the shape a top-up will take: the places are already
+			// right, and only these records need asking about.
+			return nil, Complete{}, false
 		}
 		out = append(out, at)
 		at = at.along(sc.Reversed)
@@ -247,33 +247,36 @@ func (c *cache) serve(set string, wanted Record, sc *Scope) ([]*entry, Complete,
 
 // find is the run a scope reads and the entry it starts from, or nil for a
 // scope no held run can answer.
-func (c *cache) find(set string, wanted Record, sc *Scope) (*cachedScope, *entry) {
+//
+// It says nothing about what those records hold: a run is an order, and whether
+// what stands in it is known well enough is settled record by record as the
+// walk passes them.
+func (c *cache) find(ds dataSet, sc *Scope) (*cachedScope, *entry) {
 	// No start named: the scope begins at the sequence's own beginning, or read
 	// backwards, at its own end -- which is the run claiming that end.
 	if sc.After == nil {
-		for _, s := range c.sets[set] {
-			if s.beyond(!sc.Reversed) == nil && covers(s.carried, wanted) {
+		for _, s := range c.sets[ds.set] {
+			if s.beyond(!sc.Reversed) == nil {
 				return s, nil
 			}
 		}
 		return nil, nil
 	}
-	// The record is held, and its run carries on past it.
-	for _, e := range c.at[recordKey(set, sc.After)] {
-		s := c.runs[e.scope]
-		if s == nil || !covers(s.carried, wanted) {
-			continue
-		}
-		if e.along(sc.Reversed) != nil || s.beyond(sc.Reversed) == nil {
-			return s, e
+	// The record stands somewhere in this sequence, and its run carries on past
+	// it.
+	if e := c.at[keyed(ds.set, sc.After)]; e != nil {
+		if s := c.runs[e.scope]; s != nil {
+			if e.along(sc.Reversed) != nil || s.beyond(sc.Reversed) == nil {
+				return s, e
+			}
 		}
 	}
-	// Or it is not held, or held right at the edge of its own run's guarantee --
-	// and a run guaranteed FROM this record starts in exactly the place a scope
-	// past it does. Reading backwards, one guaranteed TO it ends there.
-	for _, s := range c.sets[set] {
-		edge := s.beyond(!sc.Reversed)
-		if edge != nil && Equal(edge, sc.After) && covers(s.carried, wanted) {
+	// Or it does not stand here, or stands right at the edge of its own run's
+	// guarantee -- and a run guaranteed FROM this record starts in exactly the
+	// place a scope past it does. Reading backwards, one guaranteed TO it ends
+	// there.
+	for _, s := range c.sets[ds.set] {
+		if edge := s.beyond(!sc.Reversed); edge != nil && Equal(edge, sc.After) {
 			return s, nil
 		}
 	}
@@ -313,63 +316,93 @@ func (c *cache) handed(run *cachedScope, es []*entry) {
 // of the sequence itself, which is the stronger claim and is spelled as no end
 // at all. Read backwards the two ends swap, the records arriving furthest-first.
 //
-// Nothing is held for a refusal, for an empty answer, or for an answer
-// overlapping records already held.
-func (c *cache) hold(set string, carried Record, sc *Scope, recs []*entry, done Complete) {
+// Nothing is held for a refusal, for an empty answer, or for an answer whose
+// records already stand somewhere in this sequence.
+func (c *cache) hold(ds dataSet, sc *Scope, recs []*cachedRecord, done Complete) {
 	if done.Error != "" || len(recs) == 0 {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for _, e := range recs {
-		for _, held := range c.at[recordKey(set, e.id)] {
-			if sameCarried(c.runs[held.scope].carried, carried) {
-				return
-			}
+	// An answer whose records already stand somewhere in this sequence is not
+	// placed again -- with nothing yet to decide which ORDER is right, the one
+	// already filed is kept. Nor is one that names a record twice, which is two
+	// places for one record and no order in which both are right.
+	//
+	// What those records HOLD is another matter: two answers about one record
+	// of one source do not contradict each other while nothing decides a held
+	// value is stale, so the knowledge is taken even though the placement is
+	// refused.
+	//
+	// Which is what a top-up is. Ask a stretch for `fields={ name }`, then the
+	// same stretch for `fields={ name; size }`: the second answer says nothing
+	// new about where anything stands, and everything new about what it holds.
+	twice := make(map[string]bool, len(recs))
+	for _, r := range recs {
+		k := keyed(ds.set, r.id)
+		if c.at[k] != nil || twice[k] {
+			c.teach(ds.source, recs)
+			return
 		}
+		twice[k] = true
 	}
 
-	run := &cachedScope{set: set, carried: carried}
+	// What each record holds is filed first, because that is what a place
+	// costs and the trim below is a cost. A record already known learns what
+	// this answer brought and keeps what it had; one nothing has seen is filed
+	// as it stands.
+	run := &cachedScope{set: ds.set}
 	if sc.Reversed {
 		run.begin, run.end = done.Watermark, sc.After
-		for _, e := range recs {
-			run.pushFront(e)
+		for _, r := range recs {
+			run.pushFront(newEntry(c.knew(ds.source, r)))
 		}
 	} else {
 		run.begin, run.end = sc.After, done.Watermark
-		for _, e := range recs {
-			run.pushBack(e)
+		for _, r := range recs {
+			run.pushBack(newEntry(c.knew(ds.source, r)))
 		}
 	}
 
 	// A flood is cut down to its share BEFORE anything is asked to give way for
 	// it, or one enormous answer would evict the whole cache on its way in and
 	// only then discover it was never entitled to the room. What is dropped is
-	// the end furthest from where the reader is: records arrive in walk order,
-	// so a reader scrolling down is at the back of what just came and will not
-	// be asking for the front of it again.
-	for max := c.limit * coldShare / coldOf; run.cold > max && run.n > 0; {
-		if sc.Reversed {
-			run.trimBack(1)
-		} else {
-			run.trimFront(1)
+	// the front of the WALK: records arrive in walk order, so the reader is at
+	// the back of what just came and will not be asking for the front of it
+	// again. Which end of the run that is depends on which way the walk went.
+	//
+	// Then it is measured AGAIN, because making room can hand this run a charge
+	// it did not arrive with: where it shares a record with a run being evicted
+	// and that run held the place carrying what the record costs, the charge
+	// comes here. This run is not in the table while that happens, so it lands
+	// on the place and not on the run. Cutting down and making room go round
+	// until the run is the size it was counted at, which they reach because a
+	// pass that is not the last one has evicted something, and there is only so
+	// much to evict.
+	for {
+		for max := c.limit * coldShare / coldOf; run.cold > max && run.n > 0; {
+			c.shed(run, !sc.Reversed)
+		}
+		if run.n == 0 {
+			return // a cache too small to hold one record of it holds none
+		}
+		was := run.cost
+		c.room(run.cost)
+		run.retotal()
+		if run.cost == was {
+			break
 		}
 	}
-	if run.n == 0 {
-		return // a cache too small to hold one record of it holds none
-	}
 
-	c.room(run.cost)
 	c.cost += run.cost
 	for _, e := range run.all() {
-		k := recordKey(set, e.id)
-		c.at[k] = append(c.at[k], e)
+		c.at[keyed(ds.set, e.id)] = e
 	}
 
 	// Joined to whatever it meets, in either direction, so that scrolling leaves
 	// one run rather than a run per screenful.
-	if before := c.endingAt(set, run.begin, carried, run); before != nil && before.merge(run) {
+	if before := c.endingAt(ds.set, run.begin, run); before != nil && before.merge(run) {
 		run = before
 	} else {
 		run.id = c.next
@@ -378,17 +411,124 @@ func (c *cache) hold(set string, carried Record, sc *Scope, recs []*entry, done 
 			e.scope = run.id
 		}
 		c.runs[run.id] = run
-		c.sets[set] = append(c.sets[set], run)
+		c.sets[ds.set] = append(c.sets[ds.set], run)
 	}
-	if after := c.beginningAt(set, run.end, carried, run); after != nil && run.merge(after) {
+	if after := c.beginningAt(ds.set, run.end, run); after != nil && run.merge(after) {
 		c.forget(after)
 	}
 	c.capCold(run, sc.Reversed)
 }
 
-// endingAt and beginningAt are the runs `not` would meet, carrying the same
-// fields. Runs of one data set are few -- each is a stretch somebody is reading
-// -- so they are looked through rather than indexed.
+// knew files what an answer said about one record, and gives back what the
+// cache now knows about it -- which is the copy every data set over this source
+// reads.
+//
+// A record nothing has seen is filed as it stands, and the place about to point
+// at it takes on what it costs. One already known LEARNS: what it had it keeps,
+// what this answer brought and it had not it takes, and the difference is
+// charged to the place already carrying what it costs.
+func (c *cache) knew(src string, r *cachedRecord) *cachedRecord {
+	k := keyed(src, r.id)
+	held := c.recs[k]
+	if held == nil {
+		r.src = src
+		c.recs[k] = r
+		return r
+	}
+	if d := held.learn(r.fields, r.whole, r.gen); d != 0 && len(held.refs) > 0 {
+		c.charge(held.refs[0], d)
+	}
+	return held
+}
+
+// charge moves a cost onto one place, and onto everything that counts that
+// place: the run it stands in, the protected total if it has proved itself, and
+// the cache's own.
+//
+// A place whose run is not in the table yet is one still being built, and its
+// cost reaches the books whole when the run is filed -- so nothing is added
+// here, and nothing can be: the run it belongs to has no id to find it by. That
+// is why an answer naming one record twice is refused above. It is the one way
+// a charge could be handed on to a place that is not filed yet.
+func (c *cache) charge(e *entry, d int) {
+	if d == 0 {
+		return
+	}
+	e.cost += d
+	s := c.runs[e.scope]
+	if s == nil {
+		return
+	}
+	s.cost += d
+	if e.warm {
+		c.warm += d
+	} else {
+		s.cold += d
+	}
+	c.cost += d
+}
+
+// teach files what an answer said about records that are already known, and
+// places nothing.
+//
+// Only records already known: one nothing has ever placed would be knowledge
+// with nowhere to hang, which nothing would ever let go of. The source will say
+// it again if it is ever asked.
+func (c *cache) teach(src string, recs []*cachedRecord) {
+	for _, r := range recs {
+		if c.recs[keyed(src, r.id)] != nil {
+			c.knew(src, r)
+		}
+	}
+}
+
+// shed drops one record off an end of a run that is not yet in the cache's
+// books, which is what cutting a flood down to size amounts to. What it takes
+// off the cache is the record, where nothing else was pointing at it.
+func (c *cache) shed(s *cachedScope, front bool) {
+	e := s.head
+	if front {
+		s.trimFront(1)
+	} else {
+		e = s.tail
+		s.trimBack(1)
+	}
+	c.release(e)
+}
+
+// release lets go of one place's claim on what it knew.
+//
+// The last claim to go takes the knowledge with it: a record no sequence puts
+// anywhere is not worth the room, and the source will say it again if it is
+// ever asked. Where some other place still points there, the one that carried
+// what the record cost hands that on as it goes, so the charge outlives the
+// place that happened to arrive first.
+func (c *cache) release(e *entry) {
+	r := e.rec
+	if r == nil {
+		return
+	}
+	e.rec = nil
+	carried := len(r.refs) > 0 && r.refs[0] == e
+	kept := r.refs[:0]
+	for _, held := range r.refs {
+		if held != e {
+			kept = append(kept, held)
+		}
+	}
+	r.refs = kept
+	if len(r.refs) == 0 {
+		delete(c.recs, keyed(r.src, r.id))
+		return
+	}
+	if carried {
+		c.charge(r.refs[0], r.cost)
+	}
+}
+
+// endingAt and beginningAt are the runs `not` would meet. Runs of one data set
+// are few -- each is a stretch somebody is reading -- so they are looked
+// through rather than indexed.
 //
 // `not` is the run doing the asking, and is never the answer. A run that met
 // itself would relabel its own entries, take its own count and cost into itself
@@ -397,24 +537,24 @@ func (c *cache) hold(set string, carried Record, sc *Scope, recs []*entry, done 
 // run in the table always spans at least one record, and one that does has a
 // beginning and an end naming different records. Insurance, not a live path,
 // which is why no test kills it.
-func (c *cache) endingAt(set string, at *Value, carried Record, not *cachedScope) *cachedScope {
+func (c *cache) endingAt(set string, at *Value, not *cachedScope) *cachedScope {
 	if at == nil {
 		return nil
 	}
 	for _, s := range c.sets[set] {
-		if s != not && Equal(s.end, at) && sameCarried(s.carried, carried) {
+		if s != not && Equal(s.end, at) {
 			return s
 		}
 	}
 	return nil
 }
 
-func (c *cache) beginningAt(set string, at *Value, carried Record, not *cachedScope) *cachedScope {
+func (c *cache) beginningAt(set string, at *Value, not *cachedScope) *cachedScope {
 	if at == nil {
 		return nil
 	}
 	for _, s := range c.sets[set] {
-		if s != not && Equal(s.begin, at) && sameCarried(s.carried, carried) {
+		if s != not && Equal(s.begin, at) {
 			return s
 		}
 	}
@@ -526,7 +666,7 @@ func (c *cache) drop(s *cachedScope, front bool) {
 	if e == nil {
 		return
 	}
-	c.unfile(s.set, e)
+	delete(c.at, keyed(s.set, e.id))
 	if e.warm {
 		s.coolDown(e) // it costs the protected segment nothing once it is gone
 		c.warm -= e.cost
@@ -536,25 +676,9 @@ func (c *cache) drop(s *cachedScope, front bool) {
 	} else {
 		c.cost -= s.trimBack(1)
 	}
+	c.release(e)
 	if s.n == 0 {
 		c.forget(s)
-	}
-}
-
-// unfile takes a record out of the lookup, leaving any copy of it carrying
-// different fields where it is.
-func (c *cache) unfile(set string, e *entry) {
-	k := recordKey(set, e.id)
-	kept := c.at[k][:0]
-	for _, held := range c.at[k] {
-		if held != e {
-			kept = append(kept, held)
-		}
-	}
-	if len(kept) == 0 {
-		delete(c.at, k)
-	} else {
-		c.at[k] = kept
 	}
 }
 

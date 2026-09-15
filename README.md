@@ -45,6 +45,11 @@ It's a sibling to the rest of the line: **Mew** (text editor), **PurfecTerm**
   than making another; two runs that meet join; a run cut in two by an insert
   is two runs and not a re-query. Eviction is segmented, so a scan of a million
   records cannot flush out the handful you were actually using.
+- **Order and values are kept apart.** Where a record *stands* belongs to a data
+  set — a source, a sort and a filter. What it *holds* belongs to the source,
+  and is kept once there for every data set drawing on it. So a second sort over
+  the same records costs the places and not the fields, and a stretch already
+  fetched for one field is topped up with another rather than fetched again.
 - **Identity is not a spelling.** `Key` and `Equal` decide whether two values
   are the same value, and they owe nothing to any grammar: text and bytes are
   different kinds, 3 and 3.0 are different numbers, and floats compare by their
