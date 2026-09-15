@@ -105,9 +105,9 @@ type cachedRecord struct {
 	hit  uint64
 	warm bool
 
-	// prev and next are this record's place in its segment's list, most
+	// prior and next are this record's place in its segment's list, most
 	// recently handed at the front.
-	prev, next *cachedRecord
+	prior, next *cachedRecord
 }
 
 // newRecord is one record as an answer gave it: what it carries, and how many
@@ -336,9 +336,9 @@ func (rc *recordCache) ends(r *cachedRecord) (front, back **cachedRecord) {
 
 func (rc *recordCache) hook(r *cachedRecord) {
 	front, back := rc.ends(r)
-	r.prev, r.next = nil, *front
+	r.prior, r.next = nil, *front
 	if *front != nil {
-		(*front).prev = r
+		(*front).prior = r
 	} else {
 		*back = r
 	}
@@ -347,17 +347,17 @@ func (rc *recordCache) hook(r *cachedRecord) {
 
 func (rc *recordCache) unhook(r *cachedRecord) {
 	front, back := rc.ends(r)
-	if r.prev != nil {
-		r.prev.next = r.next
+	if r.prior != nil {
+		r.prior.next = r.next
 	} else {
 		*front = r.next
 	}
 	if r.next != nil {
-		r.next.prev = r.prev
+		r.next.prior = r.prior
 	} else {
-		*back = r.prev
+		*back = r.prior
 	}
-	r.prev, r.next = nil, nil
+	r.prior, r.next = nil, nil
 }
 
 // --- what things cost -----------------------------------------------------

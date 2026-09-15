@@ -665,7 +665,7 @@ func soundValues(t *testing.T, rc *recordCache) {
 			if r.warm {
 				warm += r.cost
 			}
-			if r.prev != last {
+			if r.prior != last {
 				t.Errorf("record %s looks back at the wrong record", valueText(r.id))
 			}
 			if rc.at[keyed(r.src, r.id)] != r {

@@ -41,8 +41,8 @@ type cachedScopeID uint64
 // An entry is one record's PLACE in a run: which record stands here, and what
 // stands either side of it.
 type entry struct {
-	scope      cachedScopeID
-	prev, next *entry
+	scope       cachedScopeID
+	prior, next *entry
 
 	id *Value
 
@@ -136,7 +136,7 @@ func (s *cachedScope) coolDown(e *entry) {
 // pushBack and pushFront add one entry at an end, which is what answering a
 // scope just past one of them amounts to.
 func (s *cachedScope) pushBack(e *entry) {
-	e.scope, e.prev, e.next = s.id, s.tail, nil
+	e.scope, e.prior, e.next = s.id, s.tail, nil
 	if s.tail != nil {
 		s.tail.next = e
 	} else {
@@ -151,9 +151,9 @@ func (s *cachedScope) pushBack(e *entry) {
 }
 
 func (s *cachedScope) pushFront(e *entry) {
-	e.scope, e.prev, e.next = s.id, nil, s.head
+	e.scope, e.prior, e.next = s.id, nil, s.head
 	if s.head != nil {
-		s.head.prev = e
+		s.head.prior = e
 	} else {
 		s.tail = e
 	}
@@ -171,17 +171,17 @@ func (s *cachedScope) pushFront(e *entry) {
 // run breaks the claim across it, so whoever does that splits the run as well;
 // taking one off an end is what trimming does, and it moves the end with it.
 func (s *cachedScope) unlink(e *entry) int {
-	if e.prev != nil {
-		e.prev.next = e.next
+	if e.prior != nil {
+		e.prior.next = e.next
 	} else {
 		s.head = e.next
 	}
 	if e.next != nil {
-		e.next.prev = e.prev
+		e.next.prior = e.prior
 	} else {
-		s.tail = e.prev
+		s.tail = e.prior
 	}
-	e.prev, e.next = nil, nil
+	e.prior, e.next = nil, nil
 	s.n--
 	s.cost -= e.cost
 	if !e.warm {
@@ -206,7 +206,7 @@ func (s *cachedScope) splitAfter(at *entry, id cachedScopeID) *cachedScope {
 		return nil
 	}
 	rest := at.next
-	at.next, rest.prev = nil, nil
+	at.next, rest.prior = nil, nil
 
 	left := &cachedScope{
 		set: s.set, begin: s.begin, end: at.id,
@@ -265,7 +265,7 @@ func (s *cachedScope) merge(other *cachedScope) bool {
 	if other.head != nil {
 		if s.tail != nil {
 			s.tail.next = other.head
-			other.head.prev = s.tail
+			other.head.prior = s.tail
 		} else {
 			s.head = other.head
 		}
@@ -298,8 +298,8 @@ func (s *cachedScope) trimBack(n int) int {
 	freed := 0
 	for i := 0; i < n && s.tail != nil; i++ {
 		e := s.tail
-		if e.prev != nil {
-			s.end = e.prev.id
+		if e.prior != nil {
+			s.end = e.prior.id
 		} else {
 			s.end = s.begin
 		}
@@ -324,7 +324,7 @@ func (s *cachedScope) serve(from *entry, count int, back bool) []*entry {
 	case from == nil:
 		at = s.head
 	case back:
-		at = from.prev
+		at = from.prior
 	default:
 		at = from.next
 	}
@@ -338,7 +338,7 @@ func (s *cachedScope) serve(from *entry, count int, back bool) []*entry {
 // along is the next entry in the direction a walk is going.
 func (e *entry) along(back bool) *entry {
 	if back {
-		return e.prev
+		return e.prior
 	}
 	return e.next
 }

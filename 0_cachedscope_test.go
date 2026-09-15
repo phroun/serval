@@ -42,7 +42,7 @@ func walk(s *cachedScope) string {
 // of links are right rather than only the ones a forward walk follows.
 func backwards(s *cachedScope) string {
 	out := ""
-	for e := s.tail; e != nil; e = e.prev {
+	for e := s.tail; e != nil; e = e.prior {
 		if out != "" {
 			out += ","
 		}
@@ -211,7 +211,7 @@ func TestADroppedRecordDoesNotReachWhatIsStillHeld(t *testing.T) {
 	dropped := s.head
 
 	s.trimFront(1)
-	if dropped.next != nil || dropped.prev != nil {
+	if dropped.next != nil || dropped.prior != nil {
 		t.Error("a dropped record still points into the run")
 	}
 	if got := ids(s.serve(dropped, 3, false)); got != "" {
