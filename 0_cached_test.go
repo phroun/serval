@@ -356,7 +356,8 @@ func TestAnExcludingQueryIsAnsweredAndNarrowed(t *testing.T) {
 	// And the record is still held entire: narrowing happens on the way out
 	// rather than by throwing anything away, so the next query wanting the lot
 	// still has it.
-	if _, _, ok := hot.serve(setKeyOf(src, byName()), nil, &Scope{Count: 4}); !ok {
+	if got, ok := hot.serve(setKeyOf(src, byName()), nil, &Scope{Count: 4}); !ok ||
+		!got.whole {
 		t.Error("an excluding query left the records narrowed in the cache")
 	}
 }
@@ -470,7 +471,7 @@ func TestAnEnormousAnswerIsNotAssembledBeforeItIsCutDown(t *testing.T) {
 
 	// And the run says where it really starts: asking from the beginning again
 	// is a miss, because the front of that answer is not here.
-	if _, _, ok := hot.serve(setKeyOf(src, byName()), nil, &Scope{Count: 99}); ok {
+	if _, ok := hot.serve(setKeyOf(src, byName()), nil, &Scope{Count: 99}); ok {
 		t.Error("a run that kept its back end answered for its front")
 	}
 	sound(t, c)
@@ -632,4 +633,311 @@ func (s *reusingSet) Read(sc *Scope, out Sink) error {
 	}
 	out.Done(Complete{Stop: StopExhausted})
 	return nil
+}
+
+// --- the order known, the values not --------------------------------------
+
+// forget takes what is known about some records out of the flesh cache and
+// leaves their places exactly where they are, which is the state the two halves
+// below are both about: the order outlives the values.
+func forget(c *cache, src *CachedSource, ids ...int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, id := range ids {
+		if r := c.flesh.get(src.key, NewInt(id)); r != nil {
+			c.flesh.drop(r)
+		}
+	}
+}
+
+// A place whose record has been let go of is answered by asking about THAT
+// RECORD, not by reading the stretch again. Where each of them stands is not in
+// question -- only what they hold.
+func TestAValueOnlyMissAsksAboutTheRecordsAndNotTheStretch(t *testing.T) {
+	c := ownCache(t, 1<<20, 1<<20)
+	src, n := cached(t, many(20))
+
+	draw(t, src, byName(), &Scope{Count: 6})
+	forget(c, src, 2, 4)
+	reads, sent, opens := n.reads, n.sent, n.opens
+
+	out, done := draw(t, src, byName(), &Scope{Count: 6})
+
+	if out.joined() != "0,1,2,3,4,5" || done.Stop != StopFilled {
+		t.Fatalf("it gave %s / %s", out.joined(), done.Stop)
+	}
+	if n.reads != reads+1 {
+		t.Errorf("it asked the source %d times", n.reads-reads)
+	}
+	// Two records went, so two came back -- not the six the scope covers.
+	if n.sent-sent != 2 {
+		t.Errorf("it fetched %d records to replace two", n.sent-sent)
+	}
+	// Two: this reading's own sequence, and the narrow question beside it.
+	if n.opens != opens+2 {
+		t.Errorf("it opened %d sequences", n.opens-opens)
+	}
+	// And it placed nothing: those records already stand somewhere, and the
+	// order an identity filter produced them in is nobody's.
+	if len(c.sets) != 1 || len(c.runs) != 1 {
+		t.Errorf("the top-up left %d runs over %d sequences", len(c.runs), len(c.sets))
+	}
+	sound(t, c)
+}
+
+// picky refuses a sequence whose filter tests identity, which is what a source
+// that cannot answer "these particular records" looks like.
+type picky struct{ child Source }
+
+func (p *picky) Open(spec *Spec) (DataSet, error) {
+	if spec.Filter != nil && spec.Filter.Op == OpID {
+		return nil, fmt.Errorf("i do not answer questions about identities")
+	}
+	return p.child.Open(spec)
+}
+
+// The narrow question is an optimisation, so a source that will not answer one
+// costs the reader nothing but the ordinary read.
+func TestASourceThatWillNotAnswerNarrowlyIsReadTheOrdinaryWay(t *testing.T) {
+	c := ownCache(t, 1<<20, 1<<20)
+	n := &counting{child: &picky{child: mustPSL(t, many(20))}}
+	src := NewCachedSource(n)
+
+	draw(t, src, byName(), &Scope{Count: 6})
+	forget(c, src, 2)
+
+	out, done := draw(t, src, byName(), &Scope{Count: 6})
+
+	if out.joined() != "0,1,2,3,4,5" || done.Stop != StopFilled {
+		t.Errorf("it gave %s / %s", out.joined(), done.Stop)
+	}
+	sound(t, c)
+}
+
+// --- places ---------------------------------------------------------------
+
+// A placer is a collector with somewhere to put places.
+type placer struct {
+	*collector
+	put     []string
+	carried []Record
+	settled *Complete
+}
+
+func (p *placer) Place(id *Value, fields Record) error {
+	if p.settled != nil {
+		panic("a place arrived after the order was settled")
+	}
+	p.put = append(p.put, valueText(id))
+	p.carried = append(p.carried, fields)
+	return nil
+}
+
+func (p *placer) Placed(c Complete) {
+	if p.ended {
+		panic("the order was settled after the scope was done")
+	}
+	p.settled = &c
+}
+
+func (p *placer) placed() string { return strings.Join(p.put, ",") }
+
+func drawPlacing(t *testing.T, src Source, spec *Spec, sc *Scope) *placer {
+	t.Helper()
+	v, err := src.Open(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	out := &placer{collector: &collector{}}
+	if err := v.Read(sc, out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// A sink with somewhere to put places gets the ORDER at once, and the records
+// it can be given, and nothing is fetched for the rest: what is worth asking
+// for is then the reader's to decide.
+func TestASinkThatTakesPlacesIsGivenTheOrderAndAsksForNothing(t *testing.T) {
+	c := ownCache(t, 1<<20, 1<<20)
+	src, n := cached(t, many(20))
+
+	draw(t, src, byName(), &Scope{Count: 6})
+	forget(c, src, 2, 4)
+	reads := n.reads
+
+	out := drawPlacing(t, src, byName(), &Scope{Count: 6})
+
+	if got := out.placed(); got != "2,4" {
+		t.Errorf("it placed %s", got)
+	}
+	if got := out.joined(); got != "0,1,3,5" {
+		t.Errorf("it gave records for %s", got)
+	}
+	if n.reads != reads {
+		t.Errorf("it asked the source %d times over", n.reads-reads)
+	}
+	// The order is settled before the scope is done, and says the same thing.
+	if out.settled == nil {
+		t.Fatal("the order was never settled, so the reader cannot lay it out")
+	}
+	if out.settled.Stop != out.done.Stop || !Equal(out.settled.Watermark, out.done.Watermark) {
+		t.Errorf("the order ended at %s/%s and the scope at %s/%s",
+			out.settled.Stop, valueText(out.settled.Watermark),
+			out.done.Stop, valueText(out.done.Watermark))
+	}
+	sound(t, c)
+}
+
+// An answer with no places in it settles its order at the end like any other,
+// and says so once.
+func TestAnAnswerWithNoPlacesSettlesItsOrderOnlyOnce(t *testing.T) {
+	ownCache(t, 1<<20, 1<<20)
+	src, _ := cached(t, many(20))
+	draw(t, src, byName(), &Scope{Count: 6})
+
+	out := drawPlacing(t, src, byName(), &Scope{Count: 6})
+
+	if got := out.placed(); got != "" {
+		t.Errorf("it placed %s, and everything was known", got)
+	}
+	if out.settled != nil {
+		t.Error("it settled the order separately with nothing to settle early")
+	}
+	if got := out.joined(); got != "0,1,2,3,4,5" {
+		t.Errorf("it gave %s", got)
+	}
+}
+
+// A place carries what is KNOWN, not what this query asked for. A place with
+// nothing in it is still a place -- and one carrying the fields that decide the
+// sequence is one a merging source can put somewhere.
+func TestAPlaceCarriesWhatIsKnownRatherThanWhatWasAsked(t *testing.T) {
+	c := ownCache(t, 1<<20, 1<<20)
+	src, _ := cached(t, many(20))
+
+	// Read the whole records, then forget one of them entirely and teach the
+	// cache one field of it back -- which is what a stretch read for one field
+	// leaves behind.
+	draw(t, src, byName(), &Scope{Count: 3})
+	forget(c, src, 1)
+	c.learnValues(src.key, []*cachedRecord{
+		newRecord("", NewInt(1), Record{Named(".name", "f001")}, Totals{Named: 2}, 0),
+	})
+
+	// A query that names only `.size` still gets `.name` on the place.
+	sized := &Spec{Sort: []SortLevel{{Field: ".name"}}, Fields: Record{{Name: ".size"}}}
+	out := drawPlacing(t, src, sized, &Scope{Count: 3})
+
+	if got := out.placed(); got != "1" {
+		t.Fatalf("it placed %s", got)
+	}
+	if got := out.carried[0].String(); got != `{ .name "f001" }` {
+		t.Errorf("the place carries %s", got)
+	}
+	// And one known of nothing at all is placed carrying nothing.
+	forget(c, src, 2)
+	if again := drawPlacing(t, src, sized, &Scope{Count: 3}); again.placed() != "1,2" {
+		t.Errorf("it placed %s", again.placed())
+	}
+}
+
+// stingy answers a narrow question about particular records and holds one of
+// them back -- a record that has gone since the order was learned. Asked the
+// ordinary way it answers in full, which is what makes the fallback visible.
+type stingy struct {
+	child Source
+	holds int64
+}
+
+func (p *stingy) Open(spec *Spec) (DataSet, error) {
+	v, err := p.child.Open(spec)
+	if err != nil {
+		return nil, err
+	}
+	return &stingySet{src: p, spec: spec, child: v}, nil
+}
+
+type stingySet struct {
+	src   *stingy
+	spec  *Spec
+	child DataSet
+}
+
+func (s *stingySet) Close() { s.child.Close() }
+
+func (s *stingySet) Read(sc *Scope, out Sink) error {
+	if s.spec.Filter == nil || s.spec.Filter.Op != OpID {
+		return s.child.Read(sc, out)
+	}
+	return s.child.Read(sc, &stingySink{src: s.src, out: out})
+}
+
+type stingySink struct {
+	src *stingy
+	out Sink
+}
+
+func (k *stingySink) Ordered() { k.out.Ordered() }
+func (k *stingySink) Record(id *Value, f Record) error {
+	if Equal(id, NewInt(k.src.holds)) {
+		return nil
+	}
+	return k.out.Record(id, f)
+}
+func (k *stingySink) Subset(id *Value, f Record, has Totals) error {
+	if Equal(id, NewInt(k.src.holds)) {
+		return nil
+	}
+	return k.out.Subset(id, f, has)
+}
+func (k *stingySink) Done(c Complete) { k.out.Done(c) }
+
+// A narrow question that comes back short leaves the scope to be read the
+// ordinary way. It was only ever an optimisation, so falling short of one costs
+// the reader an ordinary read and never a hollow record.
+func TestATopUpThatFallsShortIsReadTheOrdinaryWay(t *testing.T) {
+	c := ownCache(t, 1<<20, 1<<20)
+	held := &stingy{child: mustPSL(t, many(20)), holds: 99} // nothing held back
+	src := NewCachedSource(held)
+
+	draw(t, src, byName(), &Scope{Count: 6})
+	forget(c, src, 2, 4)
+	held.holds = 4 // and now it will not say anything about record 4
+
+	out, done := draw(t, src, byName(), &Scope{Count: 6})
+
+	if out.joined() != "0,1,2,3,4,5" || done.Stop != StopFilled {
+		t.Errorf("it gave %s / %s", out.joined(), done.Stop)
+	}
+	sound(t, c)
+}
+
+// What a query asked to leave out is left out of its places too. A place says
+// less than a result about how much of the record there is; it does not say
+// more about which fields the asker wanted to see.
+func TestAPlaceLeavesOutWhatTheQueryExcluded(t *testing.T) {
+	c := ownCache(t, 1<<20, 1<<20)
+	src, _ := cached(t, many(20))
+
+	draw(t, src, byName(), &Scope{Count: 2})
+	forget(c, src, 1)
+	// Two of its three named members known, so a question about the third is a
+	// question -- and the record is placed rather than sent.
+	c.learnValues(src.key, []*cachedRecord{newRecord("", NewInt(1),
+		Record{Named(".name", "f001"), Named(".size", 1)}, Totals{Named: 3}, 0)})
+
+	out := drawPlacing(t, src, &Spec{
+		Sort:    []SortLevel{{Field: ".name"}},
+		Fields:  Record{{Name: ".modified"}},
+		Exclude: Record{{Name: ".name"}},
+	}, &Scope{Count: 2})
+
+	if got := out.placed(); got != "1" {
+		t.Fatalf("it placed %s", got)
+	}
+	if got := out.carried[0].String(); got != "{ .size 1 }" {
+		t.Errorf("the place carries %s, and .name was asked against", got)
+	}
 }

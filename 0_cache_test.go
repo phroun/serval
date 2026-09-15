@@ -77,16 +77,44 @@ func ended(c *cache, ds dataSet, after *Value, recs []*cachedRecord) {
 	c.hold(ds, sc, recs, Complete{Stop: StopExhausted})
 }
 
+// asked is a scope answered in FULL, which is what most cases here are about:
+// a walk that got where it was going, over records that are all known well
+// enough. A walk that got there over records that are not is `thin`, below.
 func asked(c *cache, ds dataSet, wanted Record, sc *Scope) (string, Stop, bool) {
-	rs, done, ok := c.serve(ds, wanted, sc)
+	got, ok := c.serve(ds, wanted, sc)
+	if !ok || !got.whole {
+		return "", got.stop(), false
+	}
+	return walkOf(got), got.done.Stop, true
+}
+
+// thin is the same question, taking the answer whether or not what stands in it
+// is known well enough -- so it reports the ORDER, and how much of it is short.
+func thin(c *cache, ds dataSet, wanted Record, sc *Scope) (string, int, bool) {
+	got, ok := c.serve(ds, wanted, sc)
+	if !ok {
+		return "", 0, false
+	}
+	return walkOf(got), len(got.short(wanted)), true
+}
+
+func walkOf(got *serving) string {
 	out := ""
-	for _, r := range rs {
+	for _, e := range got.at {
 		if out != "" {
 			out += ","
 		}
-		out += valueText(r.id)
+		out += valueText(e.id)
 	}
-	return out, done.Stop, ok
+	return out
+}
+
+// stop is the ending word, for a serving that may not be there at all.
+func (s *serving) stop() Stop {
+	if s == nil {
+		return ""
+	}
+	return s.done.Stop
 }
 
 // placed reports whether one record of a data set still stands in the order.

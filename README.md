@@ -60,6 +60,16 @@ It's a sibling to the rest of the line: **Mew** (text editor), **PurfecTerm**
   is asked against. So a second sort costs places and not fields, and a stretch
   already fetched for one field is topped up with another rather than fetched
   again.
+- **Two ways to miss, answered differently.** Falling off the end of a run is
+  not knowing what comes next, and only reading the stretch will tell you. But a
+  walk that got where it was going over records that aren't known well enough
+  knows the *order* perfectly — so it asks the narrow question that makes
+  possible: these identities, these fields, nothing re-walked and nothing
+  already known re-sent. A sink that implements `Placing` skips even that and is
+  handed the order at once, as results for the records it can have and **places**
+  for the rest — a record's position and whatever is known of it, with no claim
+  about how much. Places are additional, never substitutional, so a sink that
+  does not take them is handed every record it would have been handed anyway.
 - **Staleness is told, never decided.** Nothing polls, nothing expires and no
   generation is compared. A source *says* what happened — a record added,
   removed, replaced, or altered in named fields — and the reason is what decides

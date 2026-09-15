@@ -29,11 +29,32 @@ package serval
 // claim and a wrong one would hand out another source's records. So a source is
 // wrapped ONCE and the wrapper is what gets kept.
 //
-// # What can be answered
+// # What can be answered, and the two ways of missing
 //
 // A hit needs two things: a run that covers the stretch, and every record in it
 // known well enough for the fields the query asked for. Both are settled in
-// cache.go.
+// cache.go -- and they fail differently, which is worth more than it sounds.
+//
+// A walk that falls off the end of a run does not know what comes NEXT, and
+// nothing short of reading the stretch will tell it. But a walk that got where
+// it was going over records that are not known well enough knows the order
+// perfectly: which record follows which, with nothing missing between. Only the
+// values are short, and there are two ways to answer that.
+//
+// **Ask about those records.** An identity filter over exactly the ones that
+// fell short, for exactly the fields wanted -- the narrow question the order
+// makes possible. The stretch is not walked again and nothing already known is
+// re-sent. That is the top-up, and it is what the two caches were split for.
+//
+// **Or hand the order over.** A sink with somewhere to put a PLACE gets the
+// stretch at once: results for the records it can be given, places for the
+// rest, and the order settled before the scope is done. Nothing is fetched, and
+// what is worth asking for next is the reader's to decide. See Placing.
+//
+// Which of the two happens is the sink's doing and nobody negotiates it: one
+// that takes places gets them, one that does not gets the values found for it.
+//
+// # What a query asks for
 //
 // A query that names FIELDS is answered wherever every one of them is settled:
 // carried, carried as an absence, or settled by the record's totals. A query
@@ -160,34 +181,159 @@ func (s *cachedSet) Read(sc *Scope, out Sink) error {
 		sc = &Scope{}
 	}
 
-	if recs, done, ok := hot.serve(s.ds, s.want, sc); ok {
-		// Said before the records, which is where it can be acted on.
-		out.Ordered()
-		for _, r := range recs {
-			fields := r.fields
-			entire := r.entire()
-			if entire && len(s.spec.Exclude) > 0 {
-				// What this query does not want comes off here rather than
-				// being held twice: the cache keeps the record, and each
-				// sequence over it takes what it asked for.
-				fields = without(fields, s.spec.Exclude)
-				entire = false
-			}
-			var err error
-			if entire {
-				err = out.Record(r.id, fields)
-			} else {
-				err = out.Subset(r.id, fields, r.has)
-			}
-			if err != nil {
-				return err
-			}
+	// Two misses, and only one of them is about the order. A walk that fell off
+	// the end of a run does not know what comes next, and nothing but reading
+	// the stretch will tell it. A walk that got where it was going over records
+	// that are not known well enough knows the ORDER perfectly -- so it is
+	// answered by asking about those records, or by handing the order over and
+	// letting whoever asked decide.
+	if got, ok := hot.serve(s.ds, s.want, sc); ok {
+		if got.whole {
+			return s.replay(got, out, nil)
 		}
-		out.Done(done)
-		return nil
+		if p := placing(out); p != nil {
+			return s.replay(got, out, p)
+		}
+		// Nowhere to put a place, so the values are found rather than skipped.
+		// Whether that worked is the cache's to say and not the child's: what
+		// came back was filed on its way past, so the question is simply
+		// whether the stretch answers now.
+		s.topUp(got.short(s.want))
+		if again, ok := hot.serve(s.ds, s.want, sc); ok && again.whole {
+			return s.replay(again, out, nil)
+		}
 	}
 	return s.child.Read(sc, &filing{set: s, scope: sc, out: out, most: hot.mostPlaces()})
 }
+
+// replay hands a held answer to the sink.
+//
+// A record known well enough goes out as a result, and where `places` is there
+// one that is not goes out as a place -- its position, and whatever is known,
+// which may be nothing. The order's own completion is said only where a place
+// went out: with none, the scope's `Done` settles the order at the end like any
+// other answer, and saying it twice would say it twice.
+func (s *cachedSet) replay(got *serving, out Sink, places Placing) error {
+	out.Ordered() // before the records, which is where it can be acted on
+	placed := false
+	for i, e := range got.at {
+		r := got.held[i]
+		if places != nil && !r.answers(s.want) {
+			placed = true
+			if err := places.Place(e.id, s.known(r)); err != nil {
+				return err
+			}
+			continue
+		}
+		fields := r.fields
+		entire := r.entire()
+		if entire && len(s.spec.Exclude) > 0 {
+			// What this query does not want comes off here rather than being
+			// held twice: the cache keeps the record, and each sequence over it
+			// takes what it asked for.
+			fields = without(fields, s.spec.Exclude)
+			entire = false
+		}
+		var err error
+		if entire {
+			err = out.Record(r.id, fields)
+		} else {
+			err = out.Subset(r.id, fields, r.has)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	if placed {
+		places.Placed(got.done)
+	}
+	out.Done(got.done)
+	return nil
+}
+
+// known is what a place carries: everything this cache knows of the record,
+// less whatever the query asked to leave out.
+//
+// Everything, and not just what was asked for. A place with nothing in it is
+// still a place and still worth sending -- and one carrying the fields that
+// DECIDE the sequence is one a merging source can put somewhere, which a place
+// carrying only what this query happened to name might not be.
+func (s *cachedSet) known(r *cachedRecord) Record {
+	if r == nil {
+		return nil
+	}
+	if len(s.spec.Exclude) == 0 {
+		return r.fields
+	}
+	return without(r.fields, s.spec.Exclude)
+}
+
+// topUp asks the child about exactly the records whose values fell short.
+//
+// Which is the narrow question the order makes possible: these identities,
+// these fields. The stretch is not walked again and nothing already known is
+// re-sent, because where those records STAND is not in question -- only what
+// they hold.
+//
+// It is an optimisation and fails quietly, saying nothing about how it went: a
+// child that will not answer an identity filter, or answers one short, simply
+// leaves the stretch still short, and the caller finds that out by asking the
+// cache rather than by being told here.
+//
+// Whatever DID come back is filed either way, a refusal included. Two answers
+// about one record of one source do not contradict each other, so a record the
+// child managed to send before it gave up is a record worth keeping.
+func (s *cachedSet) topUp(short []*Value) {
+	if len(short) == 0 {
+		// Nothing reaches here with nothing to ask about -- a stretch that is
+		// not whole has at least one record short -- so this says what is meant
+		// rather than stopping anything, and no test kills it.
+		return
+	}
+	v, err := s.src.child.Open(&Spec{
+		Sort:    s.spec.Sort,
+		Filter:  &Filter{Op: OpID, Values: short},
+		Fields:  s.spec.Fields,
+		Exclude: s.spec.Exclude,
+	})
+	if err != nil {
+		return // it will not answer questions in that shape
+	}
+	defer v.Close()
+
+	got := &topping{}
+	if err := v.Read(&Scope{Count: len(short)}, got); err != nil {
+		return
+	}
+	hot.learnValues(s.ds.source, got.kept)
+}
+
+// A topping takes a top-up's answer, which is values and nothing else: those
+// records are already placed, and the order an identity filter produced them in
+// is nobody's.
+type topping struct {
+	kept []*cachedRecord
+}
+
+func (t *topping) Ordered() {}
+
+func (t *topping) Record(id *Value, fields Record) error {
+	return t.take(id, fields, Tally(fields))
+}
+
+func (t *topping) Subset(id *Value, fields Record, has Totals) error {
+	return t.take(id, fields, has)
+}
+
+func (t *topping) take(id *Value, fields Record, has Totals) error {
+	if id != nil {
+		t.kept = append(t.kept,
+			newRecord("", id, append(Record(nil), fields...), has, 0))
+	}
+	return nil
+}
+
+func (t *topping) Done(Complete) {}
 
 // A filing is the sink a missed scope is answered into: it hands each record
 // on as it arrives and keeps a copy, and files the run when the answer ends.

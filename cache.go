@@ -248,13 +248,30 @@ func (c *cache) mostPlaces() int {
 // the end of the RUN, which is where its guarantee stops and not where the
 // records do, is a miss -- and so is meeting a record that has not been asked
 // about in enough detail yet.
-func (c *cache) serve(ds dataSet, wanted Record, sc *Scope) ([]*cachedRecord, Complete, bool) {
+// A serving is one scope answered out of what is held: the places walked, in
+// the scope's own direction, and what is known of the record standing in each.
+//
+// held runs beside at rather than in place of it, and may be nil at any
+// position: the order outlives the values, so a place whose record this cache
+// has let go of is still a place, and still says which record stands there.
+type serving struct {
+	at   []*entry
+	held []*cachedRecord
+	done Complete
+
+	// whole says every record here answers for the fields that were wanted. A
+	// serving that is not whole is still an ANSWER about the order -- which is
+	// the difference the caller acts on.
+	whole bool
+}
+
+func (c *cache) serve(ds dataSet, wanted Record, sc *Scope) (*serving, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	run, from := c.find(ds, sc)
 	if run == nil {
-		return nil, Complete{}, false
+		return nil, false
 	}
 
 	at := from
@@ -267,46 +284,58 @@ func (c *cache) serve(ds dataSet, wanted Record, sc *Scope) ([]*cachedRecord, Co
 		at = run.head
 	}
 
-	var done Complete
-	out := make([]*cachedRecord, 0, sc.Count)
-	walked := make([]*entry, 0, sc.Count)
-	for at != nil && (sc.Count <= 0 || len(out) < sc.Count) {
+	got := &serving{whole: true}
+	for at != nil && (sc.Count <= 0 || len(got.at) < sc.Count) {
 		if sc.Until != nil && Equal(at.id, sc.Until) {
-			done.Stop = StopJoined
+			got.done.Stop = StopJoined
 			break
 		}
 		r := c.flesh.get(ds.source, at.id)
 		if !r.answers(wanted) {
 			// The order is known and what stands here is not known well enough
 			// -- or is not known at all, the flesh having been let go of while
-			// the order was kept. Which is the shape a top-up will take: the
-			// places are already right, and only these records need asking
-			// about.
-			return nil, Complete{}, false
+			// the order was kept. The walk carries on: this is an answer about
+			// where the records are, and it is only the values that are short.
+			got.whole = false
 		}
-		out = append(out, r)
-		walked = append(walked, at)
+		got.at = append(got.at, at)
+		got.held = append(got.held, r)
 		at = at.along(sc.Reversed)
 	}
 
 	switch {
-	case done.Stop == StopJoined:
-	case sc.Count > 0 && len(out) == sc.Count:
-		done.Stop = StopFilled
+	case got.done.Stop == StopJoined:
+	case sc.Count > 0 && len(got.at) == sc.Count:
+		got.done.Stop = StopFilled
 	case run.beyond(sc.Reversed) == nil:
 		// The walk ran out inside a run whose far end is the sequence's own, so
 		// there is nothing past it. No watermark: nothing to be complete up to.
-		done.Stop = StopExhausted
-		c.handed(run, walked, out)
-		return out, done, true
+		got.done.Stop = StopExhausted
+		c.handed(run, got.at, got.held)
+		return got, true
 	default:
-		return nil, Complete{}, false // past the guarantee, not past the records
+		// Past the guarantee, not past the records -- and this one IS a miss.
+		// Falling off the end of a run is not knowing what comes next, which no
+		// amount of asking about these records would answer.
+		return nil, false
 	}
-	if len(out) > 0 {
-		done.Watermark = out[len(out)-1].id
+	if n := len(got.at); n > 0 {
+		got.done.Watermark = got.at[n-1].id
 	}
-	c.handed(run, walked, out)
-	return out, done, true
+	c.handed(run, got.at, got.held)
+	return got, true
+}
+
+// short is the records of this serving whose values are not known well enough,
+// which is exactly what a top-up has to ask about.
+func (s *serving) short(wanted Record) []*Value {
+	out := []*Value{}
+	for i, e := range s.at {
+		if !s.held[i].answers(wanted) {
+			out = append(out, e.id)
+		}
+	}
+	return out
 }
 
 // find is the run a scope reads and the entry it starts from, or nil for a
@@ -376,7 +405,24 @@ func (c *cache) handed(run *cachedScope, es []*entry, rs []*cachedRecord) {
 	}
 	c.capWarm()
 	for _, r := range rs {
-		c.flesh.handed(r)
+		if r != nil {
+			c.flesh.handed(r) // a place whose record is gone proves nothing here
+		}
+	}
+}
+
+// learnValues files what an answer said about records whose ORDER is already
+// known, which is what a top-up brings back.
+//
+// The places it names are already placed -- that is the whole reason the narrow
+// question could be asked -- and the sequence the answer arrived in is an
+// identity filter's, which is nobody's order. So this teaches the flesh and
+// places nothing.
+func (c *cache) learnValues(source string, recs []*cachedRecord) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, r := range recs {
+		c.flesh.learn(source, r)
 	}
 }
 

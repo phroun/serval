@@ -101,5 +101,49 @@ type Sink interface {
 	Done(c Complete)
 }
 
+// A Placing sink takes PLACES as well as records: a record's identity, and
+// whatever is known of it so far with no claim about how much that is.
+//
+// It is the third degree of knowledge, beside a whole record and a subset that
+// says how much it left out, and it is what lets an answer be started on before
+// it is finished. What a reader needs first is almost never the values -- it is
+// where the rows are. With the order it can lay its rows out and stay reactive
+// under a scrub while the contents arrive behind them.
+//
+// **Optional, and that is what makes it safe.** Places are ADDITIONAL, never
+// substitutional: a sink that is not one of these is handed every record it
+// would have been handed anyway, because whoever answers falls back to finding
+// the values rather than to sending less. So there is nothing to negotiate --
+// a sink either has somewhere to put a place or it has not.
+type Placing interface {
+	Sink
+
+	// Place is one record's position, and what is known of it so far.
+	//
+	// **Its fields are true and its silence is not.** What is here can be
+	// believed, rendered and kept; what is missing is not a claim that the
+	// record has not got it. That is the whole difference between this and a
+	// subset, which says how many members there are and therefore how much it
+	// left out.
+	Place(id *Value, fields Record) error
+
+	// Placed says the ORDER is settled: every record of this scope has been
+	// named, under Place or under Record or Subset, and here is the same claim
+	// Done will carry.
+	//
+	// It comes after the last place and before Done, and only where it says
+	// something Done would not -- an answer with no places in it settles its
+	// order at the end like any other, and says so once. Which matters because
+	// a reader cannot lay out a sequence, not even one of placeholders, until
+	// it knows no further record will turn up between two it already holds.
+	Placed(c Complete)
+}
+
+// placing is the sink as one that takes places, and nil for one that does not.
+func placing(out Sink) Placing {
+	p, _ := out.(Placing)
+	return p
+}
+
 // Order is not in a Complete. It is said before the records, on the sink,
 // because a sink told afterwards cannot act on what it already has.
