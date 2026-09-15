@@ -1,6 +1,6 @@
 package serval
 
-// What is known about one record, kept where it belongs: with its SOURCE.
+// The flesh: what records hold, kept where it belongs -- with the SOURCE.
 //
 // A record's values are knowledge about the source it came from, and not about
 // any sequence over it. Sort the same files by name and then by size and the
@@ -8,39 +8,46 @@ package serval
 // same fields, in both. So the values are held once per source, and every data
 // set drawing on that source reads the one copy.
 //
-// That is what stops a sequence forking. A run used to carry the fields its own
-// answer happened to ask for, so the same stretch fetched for `fields={ name }`
-// and for `fields={ name; size }` was two runs holding two copies of every
-// record, neither able to answer the other's question, and neither willing to
-// join the other. Now a run carries no fields at all -- it is an ORDER and
-// nothing else -- and what each record holds is one entry in a table the whole
-// process shares.
+// # A cache of its own
+//
+// This is not a table hanging off the runs. It is a SECOND CACHE, with its own
+// room, its own books and its own eviction, and what it holds answers to
+// nothing in the first one:
+//
+//   - **Flesh outlives the order.** A record stays known when the run that
+//     placed it is evicted, or when the reader closes one sort and opens
+//     another. That is the whole point: re-sorting is a new order over records
+//     whose values are all still right, and re-fetching them would be work
+//     nobody needed.
+//   - **The order outlives the flesh.** A run stays when the records standing
+//     in it are evicted. What it knows -- which record comes after which, with
+//     nothing missing between -- is what lets the fields be asked for again for
+//     exactly those records, rather than the stretch being walked from the
+//     start.
+//   - So neither pins the other, and a place holds no pointer here. It would
+//     keep the fields on the heap after this cache had let go of them, which is
+//     the one thing a cost that comes off the books is supposed to mean.
+//
+// Records are found by source and identity in one lookup, and evicted by the
+// same two-segment rule the runs use -- probation entirely before protection,
+// so that a scan of a million records cannot flush out the handful being read.
+// The segments are lists here rather than run ends, because a record can be
+// taken from anywhere: dropping one out of the middle costs no sequence,
+// there being no sequence in this cache at all.
 //
 // # Knowledge only grows
 //
 // A second answer about a record already known is ADDED to what is known rather
 // than put in its place. A field already here keeps the value it has, because
-// nothing yet decides that a held value is stale and the answer that is already
-// filed is as good as the one that just arrived; a field this answer brought
-// and the last one did not is new knowledge, and is kept. A record that ever
-// arrived WHOLE is whole from then on, and answers every question about itself
-// without being asked again.
+// nothing yet decides that a held value is stale and the answer already filed
+// is as good as the one that just arrived; a field this answer brought and the
+// last one did not is new knowledge, and is kept. A record that ever arrived
+// WHOLE is whole from then on, and answers every question about itself without
+// being asked again.
 //
-// Which is also what makes a top-up possible later: a query that wants one
-// field more than is known can ask for that field alone and file the answer
-// here, instead of fetching every record entire to learn one thing.
-//
-// # What a shared record costs
-//
-// Once. There is one copy of the fields whatever points at it, so there is one
-// charge, and a second data set sequencing the same records pays only for the
-// places -- which is what makes a second order over one body of records cheap
-// rather than twice the price.
-//
-// The charge sits on the FIRST place that pointed there, and moves to another
-// when that one goes. That keeps one book rather than two: what every run says
-// it holds adds up to exactly what the cache says it holds, and eviction gives
-// back exactly what filing took.
+// Which is what makes a top-up possible: a query wanting one field more than is
+// known can ask for that field alone, over the records a run already places,
+// and file the answer here.
 
 // A cachedRecord is what the cache knows about one record of one source.
 type cachedRecord struct {
@@ -53,8 +60,7 @@ type cachedRecord struct {
 	fields Record
 	whole  bool
 
-	// cost is what these fields cost to hold, kept in step with them: it is
-	// what every place pointing here is charged, so it moves when they grow.
+	// cost is what these fields cost to hold, kept in step with them.
 	cost int
 
 	// gen is the generation of the source this was fetched at.
@@ -65,14 +71,16 @@ type cachedRecord struct {
 	// a generation nobody can work out.
 	gen uint64
 
-	// refs is the places in sequences that point here -- one per data set
-	// sequencing this record. A record with none is knowledge nothing is
-	// reading, and is not kept.
-	//
-	// The FIRST of them carries what the record costs, and hands it on when it
-	// goes. Any of them would do; the first is the one there is always exactly
-	// one of.
-	refs []*entry
+	// hit is the tick this record was last handed to somebody, and zero for one
+	// that never has been. warm says it has been handed out more than once,
+	// which is what divides the two segments: once is no evidence, a scan
+	// touching every record it passes exactly once.
+	hit  uint64
+	warm bool
+
+	// prev and next are this record's place in its segment's list, most
+	// recently handed at the front.
+	prev, next *cachedRecord
 }
 
 // newRecord is one record as an answer gave it.
@@ -91,7 +99,8 @@ func newRecord(src string, id *Value, fields Record, whole bool, gen uint64) *ca
 // nothing held can answer, however many of its other fields are known.
 //
 // Wanting NOTHING in particular is wanting the record entire, which only a
-// whole record is.
+// whole record is. And a record this cache has let go of answers nothing, which
+// is the nil case: the order may still know where it stood.
 func (r *cachedRecord) answers(wanted Record) bool {
 	if r == nil {
 		return false
@@ -134,6 +143,169 @@ func (r *cachedRecord) learn(fields Record, whole bool, gen uint64) int {
 	return r.cost - before
 }
 
+// --- the cache ------------------------------------------------------------
+
+// A recordCache holds what records are known to carry, one entry per source and
+// identity, for every data set drawing on that source.
+//
+// It is guarded by the lock of the cache that owns it: the two are reached
+// together on every answer, so one lock is one lock less to get wrong.
+type recordCache struct {
+	limit int // what it will hold
+	cost  int // what it is holding
+	warm  int // and how much of that is protected
+
+	// tick orders hand-outs. A tick rather than a clock: it only has to order,
+	// and a monotonic counter cannot go backwards when the machine's time does.
+	tick uint64
+
+	at map[string]*cachedRecord
+
+	// The two segments, most recently handed at the front.
+	coldFront, coldBack *cachedRecord
+	warmFront, warmBack *cachedRecord
+}
+
+func newRecordCache(limit int) *recordCache {
+	return &recordCache{limit: limit, at: map[string]*cachedRecord{}}
+}
+
+// get is what is known about one record, and nil for one this cache has let go
+// of or never saw.
+func (rc *recordCache) get(src string, id *Value) *cachedRecord {
+	return rc.at[keyed(src, id)]
+}
+
+// learn files what an answer said about one record.
+//
+// A record nothing has seen is filed as it stands. One already known keeps what
+// it had and takes what this answer brought that it had not. Either way the
+// cache is brought back under its limit afterwards rather than before, so that
+// what just arrived competes for the room on the same terms as everything else
+// -- and may lose, which is what a cache too small for one record does.
+func (rc *recordCache) learn(src string, r *cachedRecord) {
+	k := keyed(src, r.id)
+	if held := rc.at[k]; held != nil {
+		d := held.learn(r.fields, r.whole, r.gen)
+		rc.cost += d
+		if held.warm {
+			rc.warm += d
+		}
+		rc.room()
+		return
+	}
+	r.src = src
+	rc.at[k] = r
+	rc.cost += r.cost
+	rc.hook(r)
+	rc.room()
+}
+
+// handed marks a record as given out, which is what decides what is worth
+// keeping. A record given out a second time has proved something a record given
+// out once has not.
+func (rc *recordCache) handed(r *cachedRecord) {
+	rc.tick++
+	rc.unhook(r)
+	if r.hit != 0 && !r.warm {
+		r.warm = true
+		rc.warm += r.cost
+	}
+	r.hit = rc.tick
+	rc.hook(r)
+	rc.capWarm()
+}
+
+// room evicts until what is held is under the limit.
+//
+// Probation first and entirely: every unproven record goes before a proven one
+// is touched, which is the rule a flood cannot get around. Only when there is
+// nothing left on probation does the coldest protected record give way, and a
+// cache of nothing but proven records would otherwise wedge -- full, unable to
+// evict, and unable to hold anything new.
+func (rc *recordCache) room() {
+	for rc.cost > rc.limit {
+		r := rc.coldBack
+		if r == nil {
+			r = rc.warmBack
+		}
+		if r == nil {
+			return
+		}
+		rc.drop(r)
+	}
+}
+
+// capWarm holds the protected segment under its share, so that records which
+// have proved themselves cannot fill the cache and leave nothing on probation
+// with a chance to prove anything. What is cooled goes to the FRONT of
+// probation: it has been read twice, which is more than anything arriving for
+// the first time can say.
+func (rc *recordCache) capWarm() {
+	for rc.warm > rc.limit*warmShare/warmOf {
+		r := rc.warmBack
+		if r == nil {
+			return
+		}
+		rc.unhook(r)
+		r.warm = false
+		rc.warm -= r.cost
+		rc.hook(r)
+	}
+}
+
+func (rc *recordCache) drop(r *cachedRecord) {
+	rc.unhook(r)
+	delete(rc.at, keyed(r.src, r.id))
+	rc.cost -= r.cost
+	if r.warm {
+		rc.warm -= r.cost
+	}
+}
+
+// setLimit fixes how much the cache holds, evicting down to it at once.
+func (rc *recordCache) setLimit(n int) {
+	rc.limit = n
+	rc.room()
+}
+
+// ends is the front and back of the segment a record belongs to. Which segment
+// is the record's own business, so there is one place that decides it.
+func (rc *recordCache) ends(r *cachedRecord) (front, back **cachedRecord) {
+	if r.warm {
+		return &rc.warmFront, &rc.warmBack
+	}
+	return &rc.coldFront, &rc.coldBack
+}
+
+func (rc *recordCache) hook(r *cachedRecord) {
+	front, back := rc.ends(r)
+	r.prev, r.next = nil, *front
+	if *front != nil {
+		(*front).prev = r
+	} else {
+		*back = r
+	}
+	*front = r
+}
+
+func (rc *recordCache) unhook(r *cachedRecord) {
+	front, back := rc.ends(r)
+	if r.prev != nil {
+		r.prev.next = r.next
+	} else {
+		*front = r.next
+	}
+	if r.next != nil {
+		r.next.prev = r.prev
+	} else {
+		*back = r.prev
+	}
+	r.prev, r.next = nil, nil
+}
+
+// --- what things cost -----------------------------------------------------
+
 // The estimated cost of the parts a record is made of.
 //
 // These are for deciding when to evict, not for reporting memory, so what
@@ -148,8 +320,8 @@ func (r *cachedRecord) learn(fields Record, whole bool, gen uint64) int {
 // within a factor of the heap they model, and fails when the shape of what is
 // held changes.
 const (
-	entryOverhead  = 112 // an entry's own struct, its two links and its slot
-	recordOverhead = 96  // a cachedRecord's own struct, its slot and its ref
+	entryOverhead  = 112 // a place's own struct, its two links and its slot
+	recordOverhead = 128 // a cachedRecord's own struct, its slot and its links
 	fieldOverhead  = 48  // one Field and the pointer to it
 	valueOverhead  = 80  // a Value beyond whatever it carries
 )

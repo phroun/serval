@@ -46,19 +46,13 @@ type entry struct {
 
 	id *Value
 
-	// rec is what is known about the record standing here, which belongs to the
-	// source rather than to this sequence and is shared with every other data
-	// set that sequences it.
-	rec *cachedRecord
-
-	// cost is what this entry added to the cache's total: its own links and
-	// identity, and -- for the first place to point at a record -- what that
-	// record costs as well.
+	// cost is what this place costs to hold: its own struct, its two links and
+	// its identity, and nothing else. What the record standing here HOLDS is
+	// the flesh cache's to count -- see cachedrecord.go -- and this run neither
+	// pays for it nor keeps it alive.
 	//
-	// It moves when the record learns something, and when the place carrying
-	// the record's charge goes and this one takes it over. Either way it moves
-	// by exactly what changed, so eviction gives back exactly what filing took
-	// however wrong the estimate behind it is.
+	// It is worked out once and never moves, so eviction gives back exactly
+	// what filing took however wrong the estimate behind it is.
 	cost int
 
 	// hit is the tick this entry was last handed to somebody, and zero for one
@@ -78,21 +72,16 @@ type entry struct {
 	// what divides the two segments -- see cache.go.
 	//
 	// It is the PLACE that is warm and not the record: what has proved itself
-	// is this reader coming back to this stretch of this sequence, and the same
-	// record standing somewhere else in another one has proved nothing.
+	// here is a reader coming back to this stretch of this sequence. What the
+	// record standing here has proved is the flesh cache's own reckoning, kept
+	// separately because the two are evicted separately.
 	warm bool
 }
 
-// newEntry is one place in a run, pointing at what is known about the record
-// standing there -- and taking on what that record costs where it is the first
-// place to point at it.
-func newEntry(rec *cachedRecord) *entry {
-	e := &entry{id: rec.id, rec: rec, cost: entryOverhead + costOfValue(rec.id)}
-	if len(rec.refs) == 0 {
-		e.cost += rec.cost
-	}
-	rec.refs = append(rec.refs, e)
-	return e
+// newEntry is one place in a run: which record stands here, and what it costs
+// to remember that.
+func newEntry(id *Value) *entry {
+	return &entry{id: id, cost: entryOverhead + costOfValue(id)}
 }
 
 // A cachedScope is a run of one data set's records, guaranteed complete between
@@ -173,21 +162,6 @@ func (s *cachedScope) pushFront(e *entry) {
 	s.cost += e.cost
 	if !e.warm {
 		s.cold += e.cost
-	}
-}
-
-// retotal takes the run's figures again from what it holds.
-//
-// A run keeps its totals as it is built, so this is for the one case that gets
-// behind them: a run charged for a record while it was not yet in the table to
-// be charged through. See cache.hold.
-func (s *cachedScope) retotal() {
-	s.cost, s.cold = 0, 0
-	for e := s.head; e != nil; e = e.next {
-		s.cost += e.cost
-		if !e.warm {
-			s.cold += e.cost
-		}
 	}
 }
 

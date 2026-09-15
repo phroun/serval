@@ -4,6 +4,25 @@ import (
 	"testing"
 )
 
+// The two caches are sized apart, so a test sizes apart what it is about: how
+// many PLACES the order may hold, and how many RECORDS the values may.
+var (
+	onePlace  = entryOverhead + costOfValue(NewInt(1))
+	oneRecord = whole(1).cost
+)
+
+// sized is a cache with room for so many of each.
+func sized(places, records int) *cache {
+	c := newCache(0)
+	c.limit = places * onePlace
+	c.flesh.setLimit(records * oneRecord)
+	return c
+}
+
+// roomy is a cache nothing will be evicted from, for the tests that are about
+// what is answered rather than about what gives way.
+func roomy() *cache { return sized(1<<20, 1<<20) }
+
 // over is the common case: one source with one sequence read out of it, where
 // the two keys are the same name. Where a case is about SHARING, it names the
 // source and the sequence separately, because that is the whole point of them
@@ -51,13 +70,19 @@ func ended(c *cache, ds dataSet, after *Value, recs []*cachedRecord) {
 }
 
 func asked(c *cache, ds dataSet, wanted Record, sc *Scope) (string, Stop, bool) {
-	es, done, ok := c.serve(ds, wanted, sc)
-	return ids(es), done.Stop, ok
+	rs, done, ok := c.serve(ds, wanted, sc)
+	out := ""
+	for _, r := range rs {
+		if out != "" {
+			out += ","
+		}
+		out += valueText(r.id)
+	}
+	return out, done.Stop, ok
 }
 
-// inCache reports whether one record of a data set still stands in the cache at
-// all.
-func inCache(c *cache, ds dataSet, id int64) bool {
+// placed reports whether one record of a data set still stands in the order.
+func placed(c *cache, ds dataSet, id int64) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.at[keyed(ds.set, NewInt(id))] != nil
@@ -68,13 +93,13 @@ func inCache(c *cache, ds dataSet, id int64) bool {
 func known(c *cache, src string, id int64) *cachedRecord {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.recs[keyed(src, NewInt(id))]
+	return c.flesh.get(src, NewInt(id))
 }
 
 // A scope answered once is answered again from what was filed, rather than
 // asked a second time.
 func TestAnAnsweredScopeIsAnsweredAgainFromTheCache(t *testing.T) {
-	c := newCache(1 << 20)
+	c := roomy()
 	filed(c, over("files"), nil, wad(1, 5))
 
 	got, stop, ok := asked(c, over("files"), nil, &Scope{Count: 3})
@@ -92,7 +117,7 @@ func TestAnAnsweredScopeIsAnsweredAgainFromTheCache(t *testing.T) {
 // answer: where the run stops is where the knowledge stops, and there may be
 // more records there.
 func TestAScopePastTheGuaranteeIsAMiss(t *testing.T) {
-	c := newCache(1 << 20)
+	c := roomy()
 	filed(c, over("files"), nil, wad(1, 5))
 
 	if got, _, ok := asked(c, over("files"), nil, &Scope{Count: 9}); ok {
@@ -110,7 +135,7 @@ func TestAScopePastTheGuaranteeIsAMiss(t *testing.T) {
 // A run that reaches the end of the sequence answers a scope running off it,
 // because there is nothing there to be missing.
 func TestARunToTheEndAnswersPastItsLastRecord(t *testing.T) {
-	c := newCache(1 << 20)
+	c := roomy()
 	ended(c, over("files"), nil, wad(1, 3))
 
 	got, stop, ok := asked(c, over("files"), nil, &Scope{Count: 9})
@@ -131,7 +156,7 @@ func TestARunToTheEndAnswersPastItsLastRecord(t *testing.T) {
 // A scope naming no count asks for everything there is, so only a run reaching
 // the end of the sequence can answer it.
 func TestAScopeWithNoCountAsksToTheEnd(t *testing.T) {
-	c := newCache(1 << 20)
+	c := roomy()
 	filed(c, over("files"), nil, wad(1, 4))
 	if got, stop, ok := asked(c, over("files"), nil, &Scope{}); ok {
 		t.Errorf("a run stopping at 4 answered for everything: %s / %s", got, stop)
@@ -147,7 +172,7 @@ func TestAScopeWithNoCountAsksToTheEnd(t *testing.T) {
 // A walk that reaches the record the asker already holds has joined two runs it
 // held separately, and says so.
 func TestAWalkThatReachesUntilIsJoined(t *testing.T) {
-	c := newCache(1 << 20)
+	c := roomy()
 	filed(c, over("files"), nil, wad(1, 6))
 
 	got, stop, ok := asked(c, over("files"), nil,
@@ -159,7 +184,7 @@ func TestAWalkThatReachesUntilIsJoined(t *testing.T) {
 
 // Read backwards a run answers the same way, the ends swapping over.
 func TestAScopeReadBackwards(t *testing.T) {
-	c := newCache(1 << 20)
+	c := roomy()
 	// Records arrive furthest-first, and the answer is guaranteed from the
 	// watermark up to the record asked past.
 	c.hold(over("files"), &Scope{After: NewInt(9), Count: 4, Reversed: true},
@@ -181,7 +206,7 @@ func TestAScopeReadBackwards(t *testing.T) {
 
 // Scrolling leaves one run rather than a run per screenful.
 func TestScrollingJoinsOntoWhatIsAlreadyHeld(t *testing.T) {
-	c := newCache(1 << 20)
+	c := roomy()
 	filed(c, over("files"), nil, wad(1, 3))
 	filed(c, over("files"), NewInt(3), wad(4, 6))
 
@@ -200,7 +225,7 @@ func TestScrollingJoinsOntoWhatIsAlreadyHeld(t *testing.T) {
 
 // A run filed before the one it joins onto is joined just the same.
 func TestARunFiledOutOfOrderStillJoins(t *testing.T) {
-	c := newCache(1 << 20)
+	c := roomy()
 	filed(c, over("files"), NewInt(3), wad(4, 6))
 	filed(c, over("files"), nil, wad(1, 3))
 
@@ -212,12 +237,12 @@ func TestARunFiledOutOfOrderStillJoins(t *testing.T) {
 	}
 }
 
-// --- the two tables ------------------------------------------------------
+// --- the order and the values ---------------------------------------------
 
 // What a record holds decides what a walk over it can answer, and holding more
 // than was asked for is an answer.
 func TestAWalkAnswersOnlyForRecordsThatAreKnownWellEnough(t *testing.T) {
-	c := newCache(1 << 20)
+	c := roomy()
 	filed(c, over("files"), nil, slims(1, 4, "name", "size"))
 
 	if _, _, ok := asked(c, over("files"), Record{Named("name", 0)}, &Scope{Count: 2}); !ok {
@@ -236,7 +261,7 @@ func TestAWalkAnswersOnlyForRecordsThatAreKnownWellEnough(t *testing.T) {
 // of the walk is. A stretch that knows `size` for all but one of its records is
 // not an answer to a question about size.
 func TestOneRecordKnownTooThinlyMissesTheWholeWalk(t *testing.T) {
-	c := newCache(1 << 20)
+	c := roomy()
 	filed(c, over("files"), nil, append(
 		slims(1, 3, "name", "size"), slims(4, 4, "name")...))
 
@@ -257,7 +282,7 @@ func TestOneRecordKnownTooThinlyMissesTheWholeWalk(t *testing.T) {
 // answer says nothing new about where anything stands and everything new about
 // what it holds.
 func TestASecondAnswerTopsUpWhatIsKnownWithoutPlacingAnything(t *testing.T) {
-	c := newCache(1 << 20)
+	c := roomy()
 	filed(c, over("files"), nil, slims(1, 4, "name"))
 
 	both := Record{Named("name", 0), Named("size", 0)}
@@ -265,8 +290,7 @@ func TestASecondAnswerTopsUpWhatIsKnownWithoutPlacingAnything(t *testing.T) {
 		t.Fatal("it answered for size before anything had said what size was")
 	}
 
-	// Read twice, so the places have proved themselves. What they learn next is
-	// protected along with them rather than counted as being on probation.
+	// Read twice, so the places have proved themselves.
 	name := Record{Named("name", 0)}
 	for i := 0; i < 2; i++ {
 		if _, _, ok := asked(c, over("files"), name, &Scope{Count: 4}); !ok {
@@ -289,10 +313,29 @@ func TestASecondAnswerTopsUpWhatIsKnownWithoutPlacingAnything(t *testing.T) {
 	sound(t, c)
 }
 
+// A record growing past what the cache has room for gives way like anything
+// else: a top-up is something arriving, even though it arrives inside a record
+// that is already here.
+func TestATopUpMakesRoomForWhatItAdds(t *testing.T) {
+	c := roomy()
+	filed(c, over("files"), nil, slims(1, 6, "name"))
+	c.flesh.setLimit(c.flesh.cost) // room for exactly what is held, and no more
+
+	filed(c, over("files"), nil, slims(1, 6, "name", "size"))
+	if c.flesh.cost > c.flesh.limit {
+		t.Errorf("after a top-up the values hold %d against a limit of %d",
+			c.flesh.cost, c.flesh.limit)
+	}
+	if len(c.flesh.at) == 6 {
+		t.Error("every record grew and none gave way, so nothing here is shown")
+	}
+	sound(t, c)
+}
+
 // A second answer that says a record arrived WHOLE settles every question about
 // it, including ones neither answer named.
 func TestAnAnswerThatArrivesWholeSettlesEverything(t *testing.T) {
-	c := newCache(1 << 20)
+	c := roomy()
 	filed(c, over("files"), nil, slims(1, 3, "name"))
 	if _, _, ok := asked(c, over("files"), nil, &Scope{Count: 3}); ok {
 		t.Fatal("a subset answered for the whole record")
@@ -312,7 +355,7 @@ func TestAnAnswerThatArrivesWholeSettlesEverything(t *testing.T) {
 // teaches it nothing -- not even a field it appears not to carry, because a
 // whole record carries everything the record has and that is what whole means.
 func TestAWholeRecordLearnsNothingMore(t *testing.T) {
-	c := newCache(1 << 20)
+	c := roomy()
 	filed(c, over("files"), nil, wad(1, 3))
 	was, held := c.Cost(), len(known(c, "files", 1).fields)
 
@@ -334,7 +377,7 @@ func TestAWholeRecordLearnsNothingMore(t *testing.T) {
 // by name and then by size is two orders over one body of values, and the
 // values are held once.
 func TestTwoDataSetsOverOneSourceShareItsRecords(t *testing.T) {
-	c := newCache(1 << 20)
+	c := roomy()
 	byName := dataSet{source: "files", set: "files/by-name"}
 	bySize := dataSet{source: "files", set: "files/by-size"}
 
@@ -342,8 +385,7 @@ func TestTwoDataSetsOverOneSourceShareItsRecords(t *testing.T) {
 	before := c.Cost()
 
 	// The same records in another order, and read the other way about for good
-	// measure. The places are new; what they hold is already known, and is the
-	// same copy.
+	// measure. The places are new; what they hold is already known.
 	back := &Scope{After: NewInt(9), Count: 4, Reversed: true}
 	c.hold(bySize, back,
 		[]*cachedRecord{whole(4), whole(2), whole(3), whole(1)},
@@ -355,23 +397,13 @@ func TestTwoDataSetsOverOneSourceShareItsRecords(t *testing.T) {
 	if got, _, ok := asked(c, bySize, nil, back); !ok || got != "4,2,3,1" {
 		t.Errorf("the second order reads %s, held %v", got, ok)
 	}
-	for i := int64(1); i <= 4; i++ {
-		r := known(c, "files", i)
-		if r == nil {
-			t.Fatalf("record %d is known to neither", i)
-		}
-		if len(r.refs) != 2 {
-			t.Errorf("record %d is pointed at from %d places, not two", i, len(r.refs))
-		}
+	if n := len(c.flesh.at); n != 4 {
+		t.Errorf("two orders over four records know %d of them", n)
 	}
-	// Four more places, and no more fields. A second order over records already
-	// known costs what the places cost and nothing more, which is a fraction of
-	// what the first one did -- where holding the fields twice would have cost
-	// the same again.
-	added, places := c.Cost()-before, 4*(entryOverhead+costOfValue(NewInt(1)))
-	if added != places {
+	// Four more places, and no more values.
+	if added, want := c.Cost()-before, 4*onePlace; added != want {
 		t.Errorf("a second order over the same records cost %d on top of %d, "+
-			"where four places come to %d", added, before, places)
+			"where four places come to %d", added, before, want)
 	}
 	sound(t, c)
 }
@@ -379,7 +411,7 @@ func TestTwoDataSetsOverOneSourceShareItsRecords(t *testing.T) {
 // One data set learning something teaches the other, the record being one
 // record.
 func TestWhatOneDataSetLearnsTheOtherKnows(t *testing.T) {
-	c := newCache(1 << 20)
+	c := roomy()
 	byName := dataSet{source: "files", set: "files/by-name"}
 	bySize := dataSet{source: "files", set: "files/by-size"}
 
@@ -397,64 +429,92 @@ func TestWhatOneDataSetLearnsTheOtherKnows(t *testing.T) {
 	sound(t, c)
 }
 
-// What a record costs is charged once, whatever points at it -- and the charge
-// outlives the place that happened to arrive first.
-//
-// The last place to let go of a record lets go of what it held: knowledge
-// nothing puts anywhere is not worth the room, and the source will say it again
-// if it is ever asked.
-func TestARecordIsChargedOnceAndKeptWhileAnythingPlacesIt(t *testing.T) {
+// --- the two caches let go of each other ----------------------------------
+
+// The values outlive the order. Close one sort and open another and the new
+// order is new, while every value it needs is still here -- which is the whole
+// reason the records are not kept with the run that placed them.
+func TestTheValuesOutliveTheOrder(t *testing.T) {
+	c := sized(4, 64) // room for one order of four places, and values to spare
 	byName := dataSet{source: "files", set: "files/by-name"}
 	bySize := dataSet{source: "files", set: "files/by-size"}
-	place := entryOverhead + costOfValue(NewInt(1))
 
-	// Filed by name first, so it is the place in THAT order that carries what
-	// each record costs.
-	build := func() *cache {
-		c := newCache(1 << 20)
-		filed(c, byName, nil, wad(1, 3))
-		filed(c, bySize, nil, []*cachedRecord{whole(3), whole(2), whole(1)})
-		return c
-	}
+	filed(c, byName, nil, wad(1, 4))
+	// A second order of four, which the order has no room for beside the first.
+	filed(c, bySize, nil, []*cachedRecord{whole(4), whole(3), whole(2), whole(1)})
 
-	// Dropping the place that carries nothing frees the place and no more, and
-	// what the record costs stays where it was.
-	c := build()
-	was := c.Cost()
-	c.mu.Lock()
-	c.drop(c.sets["files/by-size"][0], false) // record 1 is at that run's end
-	c.mu.Unlock()
-	if c.Cost() != was-place {
-		t.Errorf("dropping a place that carried nothing freed %d, not %d",
-			was-c.Cost(), place)
+	if placed(c, byName, 1) && placed(c, bySize, 1) {
+		t.Fatal("both orders fit, so nothing was given up and nothing is shown")
 	}
-	if known(c, "files", 1) == nil {
-		t.Error("the other order still places record 1, and it was forgotten")
+	for i := int64(1); i <= 4; i++ {
+		if known(c, "files", i) == nil {
+			t.Errorf("record %d was forgotten along with the order that placed it", i)
+		}
 	}
 	sound(t, c)
+}
 
-	// And dropping the one that does hands the charge to what is left, rather
-	// than taking it off the books while the record is still held.
-	c = build()
-	was = c.Cost()
-	c.mu.Lock()
-	c.drop(c.sets["files/by-name"][0], true) // record 1 is at that run's start
-	c.mu.Unlock()
-	if c.Cost() != was-place {
-		t.Errorf("dropping the place that carried the charge freed %d, not %d",
-			was-c.Cost(), place)
+// And the order outlives the values. A run whose records have been evicted
+// still knows what comes after what -- which is what a top-up will be asked
+// against, rather than the stretch being walked from the start.
+func TestTheOrderOutlivesTheValues(t *testing.T) {
+	c := sized(64, 3) // room for the order, and for three records of values
+	filed(c, over("files"), nil, wad(1, 6))
+
+	if n := len(c.flesh.at); n != 3 {
+		t.Fatalf("a cache of three records holds %d", n)
 	}
-	if known(c, "files", 1) == nil {
-		t.Error("the other order still places record 1, and it was forgotten")
+	// The three it kept are the ones that arrived LAST, which is where the
+	// reader is: records come in walk order, and the front of a walk is what it
+	// has already gone past.
+	for i := int64(1); i <= 6; i++ {
+		if kept := known(c, "files", i) != nil; kept != (i > 3) {
+			t.Errorf("record %d of six, into room for three, kept=%v", i, kept)
+		}
+	}
+	for i := int64(1); i <= 6; i++ {
+		if !placed(c, over("files"), i) {
+			t.Errorf("place %d went with the values standing in it", i)
+		}
+	}
+	// The order is still there and still one run, and the walk misses because
+	// the records are not known -- not because the sequence is not.
+	if n := len(c.sets["files"]); n != 1 {
+		t.Errorf("the order is in %d runs", n)
+	}
+	if _, _, ok := asked(c, over("files"), nil, &Scope{Count: 6}); ok {
+		t.Error("it answered for records it no longer knows anything about")
+	}
+	// And a fresh answer over the same stretch tops those records back up
+	// without disturbing the order.
+	filed(c, over("files"), nil, wad(1, 6))
+	if n := len(c.sets["files"]); n != 1 {
+		t.Errorf("topping the values back up left %d runs", n)
 	}
 	sound(t, c)
+}
 
-	// Now nothing places it.
-	c.mu.Lock()
-	c.drop(c.sets["files/by-size"][0], false)
-	c.mu.Unlock()
-	if known(c, "files", 1) != nil {
-		t.Error("nothing places record 1 any more, and it is still held")
+// An answer overlapping records already placed does not place them twice --
+// and still says what those records hold.
+func TestAnOverlappingAnswerIsNotPlacedTwice(t *testing.T) {
+	c := roomy()
+	filed(c, over("files"), nil, slims(1, 4, "name"))
+	runs := len(c.sets["files"])
+
+	filed(c, over("files"), NewInt(2), slims(3, 6, "name", "size"))
+	if n := len(c.sets["files"]); n != runs {
+		t.Errorf("an overlapping answer took the order from %d runs to %d", runs, n)
+	}
+	if placed(c, over("files"), 5) {
+		t.Error("it placed part of the overlapping answer")
+	}
+	// What it said about the records it overlapped is known, including for the
+	// ones it never placed: knowledge is knowledge wherever it stands.
+	if r := known(c, "files", 3); r == nil || !r.fields.Has("size") {
+		t.Error("it dropped what the overlapping answer said about a record it holds")
+	}
+	if known(c, "files", 5) == nil {
+		t.Error("it dropped what the overlapping answer said about record 5")
 	}
 	sound(t, c)
 }
@@ -467,7 +527,7 @@ func TestARecordIsChargedOnceAndKeptWhileAnythingPlacesIt(t *testing.T) {
 // is spelled, and `i123;` being how the number is. They are different records
 // of different sources and they stay apart.
 func TestANameAndTheIdentityAfterItDoNotRunTogether(t *testing.T) {
-	c := newCache(1 << 20)
+	c := roomy()
 	one := dataSet{source: "a", set: "a"}
 	two := dataSet{source: "ay5:", set: "ay5:"}
 	odd, plain := NewSymbol("i123;"), NewInt(123)
@@ -480,16 +540,16 @@ func TestANameAndTheIdentityAfterItDoNotRunTogether(t *testing.T) {
 	place(one, odd, "left")
 	place(two, plain, "right")
 
-	if len(c.recs) != 2 || len(c.runs) != 2 {
+	if len(c.flesh.at) != 2 || len(c.runs) != 2 {
 		t.Fatalf("two records of two sources came to %d of them in %d runs",
-			len(c.recs), len(c.runs))
+			len(c.flesh.at), len(c.runs))
 	}
 	for _, w := range []struct {
 		ds   dataSet
 		id   *Value
 		want string
 	}{{one, odd, "left"}, {two, plain, "right"}} {
-		r := c.recs[keyed(w.ds.source, w.id)]
+		r := c.flesh.at[keyed(w.ds.source, w.id)]
 		if r == nil || r.fields.Get("name").Str != w.want {
 			t.Errorf("%q holds %s for %s", w.ds.source, r.fields, valueText(w.id))
 		}
@@ -497,92 +557,36 @@ func TestANameAndTheIdentityAfterItDoNotRunTogether(t *testing.T) {
 	sound(t, c)
 }
 
-// Making room for an answer can hand that answer a charge it did not arrive
-// with: it shares its records with the run being evicted, and the places
-// carrying what those records cost are the ones going. The answer is not in the
-// table while that happens, so it is measured again before it is counted -- and
-// the books still add up.
-func TestAnAnswerChargedWhileItIsBeingFiledStillAddsUp(t *testing.T) {
-	one := ent(1).cost
-	byName := dataSet{source: "files", set: "files/by-name"}
-	bySize := dataSet{source: "files", set: "files/by-size"}
-
-	// Nine records' room, so that a run of four is well under the share one run
-	// is cut down to and nothing is trimmed on the way in.
-	build := func() *cache {
-		c := newCache(one * 9)
-		// Four records that have proved themselves, of another source, so that
-		// they are not what gives way.
-		filed(c, over("other"), nil, wad(1, 4))
-		for i := 0; i < 2; i++ {
-			asked(c, over("other"), nil, &Scope{Count: 4})
-		}
-		// And four nothing has asked for twice, which are where the charges sit.
-		filed(c, byName, nil, wad(1, 4))
-		return c
-	}
-
-	// The second order over the same records has to evict the first to fit, and
-	// every place it evicts hands its charge to a place in the answer being
-	// filed -- which is not in the table to be charged through yet.
-	c := build()
-	filed(c, bySize, nil, []*cachedRecord{whole(4), whole(3), whole(2), whole(1)})
-	sound(t, c)
-	if !inCache(c, over("other"), 1) {
-		t.Error("what had proved itself gave way to an order over records already held")
-	}
-
-	// And where the two overlap only in part, so that some of what is evicted
-	// hands its charge on and some of it goes for good.
-	c = build()
-	filed(c, bySize, nil, []*cachedRecord{whole(3), whole(2), whole(9), whole(8)})
-	sound(t, c)
-}
-
 // An answer naming one record twice is two places for one record, and there is
-// no order in which both are right. None of it is placed.
-func TestAnAnswerNamingOneRecordTwiceIsRefused(t *testing.T) {
-	c := newCache(1 << 20)
+// no order in which both are right. None of it is placed -- though what it says
+// those records hold is still taken.
+func TestAnAnswerNamingOneRecordTwiceIsNotPlaced(t *testing.T) {
+	c := roomy()
 	c.hold(over("files"), &Scope{Count: 3},
 		[]*cachedRecord{whole(1), whole(2), whole(1)},
 		Complete{Stop: StopFilled, Watermark: NewInt(1)})
 
-	if c.Cost() != 0 || len(c.runs) != 0 || len(c.recs) != 0 {
-		t.Errorf("it held %d in %d runs over %d records",
-			c.Cost(), len(c.runs), len(c.recs))
-	}
-	sound(t, c)
-}
-
-// An answer overlapping records already placed does not place them twice.
-func TestAnOverlappingAnswerIsNotPlacedTwice(t *testing.T) {
-	c := newCache(1 << 20)
-	filed(c, over("files"), nil, wad(1, 4))
-	was := c.Cost()
-
-	filed(c, over("files"), NewInt(2), wad(3, 6))
-	if c.Cost() != was {
-		t.Errorf("an overlapping answer took the cache from %d to %d", was, c.Cost())
-	}
-	if inCache(c, over("files"), 5) {
-		t.Error("it placed part of the overlapping answer")
-	}
-	if known(c, "files", 5) != nil {
-		t.Error("it kept knowledge of a record it placed nowhere")
+	if len(c.runs) != 0 || len(c.at) != 0 {
+		t.Errorf("it placed %d records in %d runs", len(c.at), len(c.runs))
 	}
 	sound(t, c)
 }
 
 // --- the books -----------------------------------------------------------
 
-// sound checks everything the cache says about itself against what it is
-// actually holding. A cache whose books are wrong evicts the wrong things, or
-// stops evicting at all, and neither shows up as a wrong answer until much
+// sound checks everything both caches say about themselves against what they
+// are actually holding. A cache whose books are wrong evicts the wrong things,
+// or stops evicting at all, and neither shows up as a wrong answer until much
 // later -- so it is checked after anything that moves records about.
 func sound(t *testing.T, c *cache) {
 	t.Helper()
+	soundOrder(t, c)
+	soundValues(t, c.flesh)
+}
+
+func soundOrder(t *testing.T, c *cache) {
+	t.Helper()
 	cost, warm, n := 0, 0, 0
-	seen := map[*cachedRecord]int{}
 	for _, s := range c.runs {
 		if s.n == 0 {
 			t.Error("an emptied run is still held")
@@ -599,15 +603,9 @@ func sound(t *testing.T, c *cache) {
 				t.Errorf("record %s sits in run %d saying it is in %d",
 					valueText(e.id), s.id, e.scope)
 			}
-			if e.rec == nil {
-				t.Errorf("record %s stands in run %d holding nothing at all",
-					valueText(e.id), s.id)
-				continue
-			}
-			seen[e.rec]++
-			if c.recs[keyed(e.rec.src, e.id)] != e.rec {
-				t.Errorf("record %s stands in run %d pointing at knowledge the "+
-					"cache no longer keeps", valueText(e.id), s.id)
+			if want := entryOverhead + costOfValue(e.id); e.cost != want {
+				t.Errorf("place %s costs %d, and should cost %d",
+					valueText(e.id), e.cost, want)
 			}
 		}
 		if held != s.n || cold != s.cold || mine != s.cost {
@@ -624,35 +622,6 @@ func sound(t *testing.T, c *cache) {
 	if len(c.at) != n {
 		t.Errorf("the lookup names %d places and the runs hold %d", len(c.at), n)
 	}
-	// Every record is pointed at by exactly the places that say they point at
-	// it, and none is kept that nothing points at.
-	if len(c.recs) != len(seen) {
-		t.Errorf("%d records are known and %d are pointed at", len(c.recs), len(seen))
-	}
-	for r, places := range seen {
-		if len(r.refs) != places {
-			t.Errorf("record %s is pointed at from %d places and lists %d",
-				valueText(r.id), places, len(r.refs))
-		}
-		for _, e := range r.refs {
-			if e.rec != r {
-				t.Errorf("record %s lists a place that points elsewhere",
-					valueText(r.id))
-			}
-		}
-		// Exactly one place carries what the record costs, and it is the first.
-		own := entryOverhead + costOfValue(r.id)
-		for i, e := range r.refs {
-			want := own
-			if i == 0 {
-				want += r.cost
-			}
-			if e.cost != want {
-				t.Errorf("place %d of record %s costs %d, and should cost %d",
-					i, valueText(r.id), e.cost, want)
-			}
-		}
-	}
 	for set, ss := range c.sets {
 		for _, s := range ss {
 			if c.runs[s.id] != s {
@@ -661,14 +630,69 @@ func sound(t *testing.T, c *cache) {
 		}
 	}
 	if c.cost > c.limit && c.cost > 0 {
-		t.Errorf("it holds %d against a limit of %d", c.cost, c.limit)
+		t.Errorf("the order holds %d against a limit of %d", c.cost, c.limit)
 	}
 }
 
-// What the cache says it is holding is what it is holding, through eviction.
-func TestTheTotalIsWhatTheRunsHold(t *testing.T) {
-	one := ent(1).cost
-	c := newCache(one * 10)
+func soundValues(t *testing.T, rc *recordCache) {
+	t.Helper()
+	cost, warm, listed := 0, 0, 0
+	for _, seg := range []struct {
+		warm        bool
+		front, back *cachedRecord
+	}{{false, rc.coldFront, rc.coldBack}, {true, rc.warmFront, rc.warmBack}} {
+		// Bounded, so that a segment relinked into a ring is reported rather
+		// than walked for ever.
+		var last *cachedRecord
+		for r := seg.front; r != nil; r = r.next {
+			if listed > len(rc.at) {
+				t.Fatalf("a segment holds more records than the table names, " +
+					"so it has been linked into a ring")
+			}
+			listed, cost = listed+1, cost+r.cost
+			if r.warm != seg.warm {
+				t.Errorf("record %s is in the %v segment saying it is %v",
+					valueText(r.id), seg.warm, r.warm)
+			}
+			if r.warm {
+				warm += r.cost
+			}
+			if r.prev != last {
+				t.Errorf("record %s looks back at the wrong record", valueText(r.id))
+			}
+			if rc.at[keyed(r.src, r.id)] != r {
+				t.Errorf("record %s is in a segment and not in the table",
+					valueText(r.id))
+			}
+			if want := costOfFields(r.fields); r.cost != want {
+				t.Errorf("record %s holds %s at %d, and should cost %d",
+					valueText(r.id), r.fields, r.cost, want)
+			}
+			last = r
+		}
+		if last != seg.back {
+			t.Error("a segment's back is not the last record in it")
+		}
+	}
+	if listed != len(rc.at) {
+		t.Errorf("the segments hold %d records and the table names %d",
+			listed, len(rc.at))
+	}
+	if cost != rc.cost {
+		t.Errorf("the records come to %d and the total says %d", cost, rc.cost)
+	}
+	if warm != rc.warm {
+		t.Errorf("%d of them is protected and the total says %d", warm, rc.warm)
+	}
+	if rc.cost > rc.limit && rc.cost > 0 {
+		t.Errorf("the values hold %d against a limit of %d", rc.cost, rc.limit)
+	}
+}
+
+// What the caches say they are holding is what they are holding, through
+// eviction.
+func TestTheTotalIsWhatIsHeld(t *testing.T) {
+	c := sized(10, 10)
 	for i := int64(0); i < 8; i++ {
 		filed(c, over("files"), NewInt(i*3), wad(i*3+1, i*3+3))
 		asked(c, over("files"), nil, &Scope{After: NewInt(i * 3), Count: 3})
@@ -676,13 +700,12 @@ func TestTheTotalIsWhatTheRunsHold(t *testing.T) {
 	}
 }
 
-// The point of the two segments: a flood of records nothing has asked for twice
-// does not push out the records that have proved themselves.
+// The point of the two segments, on each side: a flood of records nothing has
+// asked for twice does not push out what has proved itself.
 func TestAFloodDoesNotEvictWhatHasProvedItself(t *testing.T) {
-	one := ent(1).cost
-	c := newCache(one * 40)
+	c := sized(40, 40)
 
-	// Five records, read twice, so they are warm.
+	// Five records, read twice, so they are warm on both counts.
 	filed(c, over("proven"), nil, wad(1, 5))
 	for i := 0; i < 2; i++ {
 		if _, _, ok := asked(c, over("proven"), nil, &Scope{Count: 5}); !ok {
@@ -698,7 +721,10 @@ func TestAFloodDoesNotEvictWhatHasProvedItself(t *testing.T) {
 	}
 
 	for i := int64(1); i <= 5; i++ {
-		if !inCache(c, over("proven"), i) {
+		if !placed(c, over("proven"), i) {
+			t.Errorf("place %d was flushed out by the flood", i)
+		}
+		if known(c, "proven", i) == nil {
 			t.Errorf("record %d was flushed out by the flood", i)
 		}
 	}
@@ -708,11 +734,10 @@ func TestAFloodDoesNotEvictWhatHasProvedItself(t *testing.T) {
 	sound(t, c)
 }
 
-// One answer larger than the cache does not evict everything else on its way in
-// only to be cut down afterwards. It is cut down first.
+// One answer larger than the order's room does not evict everything else on its
+// way in only to be cut down afterwards. It is cut down first.
 func TestOneEnormousAnswerIsCutDownBeforeAnythingGivesWayForIt(t *testing.T) {
-	one := ent(1).cost
-	c := newCache(one * 20)
+	c := sized(20, 1<<20)
 	filed(c, over("proven"), nil, wad(1, 4))
 	for i := 0; i < 2; i++ {
 		asked(c, over("proven"), nil, &Scope{Count: 4})
@@ -721,27 +746,27 @@ func TestOneEnormousAnswerIsCutDownBeforeAnythingGivesWayForIt(t *testing.T) {
 	filed(c, over("flood"), nil, wad(100, 500))
 
 	for i := int64(1); i <= 4; i++ {
-		if !inCache(c, over("proven"), i) {
-			t.Errorf("record %d gave way to one enormous answer", i)
+		if !placed(c, over("proven"), i) {
+			t.Errorf("place %d gave way to one enormous answer", i)
 		}
 	}
 	// What was kept of the flood is its END -- the part a reader scrolling down
 	// is next to -- and no more than its share.
-	if !inCache(c, over("flood"), 500) || inCache(c, over("flood"), 100) {
+	if !placed(c, over("flood"), 500) || placed(c, over("flood"), 100) {
 		t.Error("it kept the wrong end of the flood")
 	}
-	if c.Cost() > c.Limit() {
-		t.Errorf("it holds %d against a limit of %d", c.Cost(), c.Limit())
+	if c.cost > c.limit {
+		t.Errorf("the order holds %d against a limit of %d", c.cost, c.limit)
 	}
-	// And what it shed on the way in it does not still know: a record cut off
-	// the front of a flood is placed nowhere.
-	if known(c, "flood", 100) != nil {
-		t.Error("it kept what it knew about a record it never placed")
+	// The values are another cache with its own room, and it was given room:
+	// what the order never placed it still knows, and will not ask for again.
+	if known(c, "flood", 100) == nil {
+		t.Error("it forgot a record whose place it cut, though it had the room")
 	}
 	sound(t, c)
 }
 
-// proven fills the cache with records that have all been read twice, spread
+// proven fills both caches with records that have all been read twice, spread
 // over enough sequences that no one run is large enough to be taken for a
 // flood.
 func proven(c *cache, sets int, each int64) {
@@ -755,22 +780,20 @@ func proven(c *cache, sets int, each int64) {
 
 // A run that outgrows its share as it is scrolled loses the end the reader has
 // left behind -- and that is decided by which way the reader is going, not by
-// which end was read longest ago. Records that have just arrived have been read
+// which end was read longest ago. Places that have just arrived have been read
 // never, which would sort them coldest of all, and they are the very ones the
 // reader is sitting on.
 func TestAGrowingRunLosesTheEndTheReaderHasLeft(t *testing.T) {
-	one := ent(1).cost
-
-	down := newCache(one * 20) // so one run may hold ten
+	down := sized(20, 1<<20) // so one run may hold ten places
 	filed(down, over("files"), nil, wad(1, 6))
 	asked(down, over("files"), nil, &Scope{Count: 6})
 	filed(down, over("files"), NewInt(6), wad(7, 12))
-	if inCache(down, over("files"), 1) || !inCache(down, over("files"), 12) {
+	if placed(down, over("files"), 1) || !placed(down, over("files"), 12) {
 		t.Error("scrolling down lost the end it was scrolling towards")
 	}
 	sound(t, down)
 
-	up := newCache(one * 20)
+	up := sized(20, 1<<20)
 	up.hold(over("files"), &Scope{After: NewInt(100), Count: 6, Reversed: true},
 		[]*cachedRecord{whole(99), whole(98), whole(97), whole(96), whole(95), whole(94)},
 		Complete{Stop: StopFilled, Watermark: NewInt(94)})
@@ -778,18 +801,17 @@ func TestAGrowingRunLosesTheEndTheReaderHasLeft(t *testing.T) {
 	up.hold(over("files"), &Scope{After: NewInt(94), Count: 6, Reversed: true},
 		[]*cachedRecord{whole(93), whole(92), whole(91), whole(90), whole(89), whole(88)},
 		Complete{Stop: StopFilled, Watermark: NewInt(88)})
-	if inCache(up, over("files"), 99) || !inCache(up, over("files"), 88) {
+	if placed(up, over("files"), 99) || !placed(up, over("files"), 88) {
 		t.Error("scrolling up lost the end it was scrolling towards")
 	}
 	sound(t, up)
 }
 
-// A run outgrowing its share stops at records that have proved themselves
-// rather than eating through them. The share is a cap on what is UNPROVEN, so
-// taking a proven record for it would not even bring the run under the cap.
+// A run outgrowing its share stops at places that have proved themselves rather
+// than eating through them. The share is a cap on what is UNPROVEN, so taking a
+// proven place for it would not even bring the run under the cap.
 func TestAGrowingRunDoesNotEatThroughWhatItHasProved(t *testing.T) {
-	one := ent(1).cost
-	c := newCache(one * 60) // so one run may hold thirty on probation
+	c := sized(60, 1<<20) // so one run may hold thirty places on probation
 
 	filed(c, over("files"), nil, wad(1, 10))
 	for i := 0; i < 2; i++ {
@@ -799,50 +821,68 @@ func TestAGrowingRunDoesNotEatThroughWhatItHasProved(t *testing.T) {
 	filed(c, over("files"), NewInt(25), wad(26, 45))
 
 	for i := int64(1); i <= 10; i++ {
-		if !inCache(c, over("files"), i) {
-			t.Errorf("record %d was eaten by the run it had proved itself in", i)
+		if !placed(c, over("files"), i) {
+			t.Errorf("place %d was eaten by the run it had proved itself in", i)
 		}
 	}
 	sound(t, c)
 }
 
 // A refusal is an answer, and it is not a run: nothing is guaranteed between
-// anything.
+// anything, and nothing is learned either.
 func TestARefusalIsNotFiled(t *testing.T) {
-	c := newCache(1 << 20)
+	c := roomy()
 	c.hold(over("files"), &Scope{Count: 3}, wad(1, 3),
 		Complete{Error: "the records are gone"})
-	if c.Cost() != 0 || len(c.runs) != 0 || len(c.recs) != 0 {
+	if c.Cost() != 0 || len(c.runs) != 0 || len(c.flesh.at) != 0 {
 		t.Errorf("a refusal left %d bytes in %d runs over %d records",
-			c.Cost(), len(c.runs), len(c.recs))
+			c.Cost(), len(c.runs), len(c.flesh.at))
 	}
 }
 
-// A cache too small to hold one record holds none, and does not keep a run of
-// nothing to say so -- nor anything it learned on the way in.
-func TestACacheTooSmallForOneRecordHoldsNothing(t *testing.T) {
-	c := newCache(1)
+// A cache too small for one of a thing holds none of it -- and the two are
+// separate, so each answers for itself.
+func TestACacheTooSmallForOneThingHoldsNoneOfIt(t *testing.T) {
+	c := sized(0, 0)
 	filed(c, over("files"), nil, wad(1, 5))
-	if c.Cost() != 0 || len(c.runs) != 0 || len(c.sets) != 0 || len(c.recs) != 0 {
-		t.Errorf("it holds %d in %d runs over %d sequences and %d records",
-			c.Cost(), len(c.runs), len(c.sets), len(c.recs))
+	if c.cost != 0 || len(c.runs) != 0 || len(c.sets) != 0 {
+		t.Errorf("the order holds %d in %d runs over %d sequences",
+			c.cost, len(c.runs), len(c.sets))
+	}
+	if c.flesh.cost != 0 || len(c.flesh.at) != 0 {
+		t.Errorf("the values hold %d over %d records", c.flesh.cost, len(c.flesh.at))
+	}
+	sound(t, c)
+
+	// With room for the order and none for the values, the order is still held.
+	c = sized(64, 0)
+	filed(c, over("files"), nil, wad(1, 5))
+	if len(c.at) != 5 {
+		t.Errorf("the order holds %d places of five", len(c.at))
+	}
+	if len(c.flesh.at) != 0 {
+		t.Errorf("the values hold %d records with no room at all", len(c.flesh.at))
 	}
 	sound(t, c)
 }
 
-// The protected segment cannot fill the cache: something has to be left on
+// The protected segment cannot fill either cache: something has to be left on
 // probation, or nothing new could ever prove itself.
 func TestTheProtectedSegmentIsHeldUnderItsShare(t *testing.T) {
-	one := ent(1).cost
-	c := newCache(one * 20)
+	c := sized(20, 20)
 	proven(c, 4, 5)
 
-	if c.warm == 0 {
-		t.Fatal("nothing was protected at all")
+	if c.warm == 0 || c.flesh.warm == 0 {
+		t.Fatalf("nothing was protected: %d of the order, %d of the values",
+			c.warm, c.flesh.warm)
 	}
 	if c.warm > c.limit*warmShare/warmOf {
-		t.Errorf("%d of a %d cache is protected, past the share of %d",
+		t.Errorf("%d of a %d order is protected, past the share of %d",
 			c.warm, c.limit, c.limit*warmShare/warmOf)
+	}
+	if c.flesh.warm > c.flesh.limit*warmShare/warmOf {
+		t.Errorf("%d of a %d of values is protected, past the share of %d",
+			c.flesh.warm, c.flesh.limit, c.flesh.limit*warmShare/warmOf)
 	}
 }
 
@@ -851,26 +891,24 @@ func TestTheProtectedSegmentIsHeldUnderItsShare(t *testing.T) {
 // full of protected records, unable to evict any of them, and unable to hold
 // anything new.
 func TestACacheOfNothingButProvenRecordsStillMakesRoom(t *testing.T) {
-	one := ent(1).cost
-	c := newCache(one * 20)
+	c := sized(20, 20)
 	proven(c, 4, 5)
 
-	c.SetLimit(one * 4)
-	if c.Cost() > one*4 {
-		t.Errorf("it holds %d against a limit of %d", c.Cost(), one*4)
+	c.SetLimit(4*onePlace + 4*oneRecord)
+	if c.Cost() > c.Limit() {
+		t.Errorf("it holds %d against a limit of %d", c.Cost(), c.Limit())
 	}
-	if c.Cost() == 0 {
-		t.Error("it emptied itself rather than trimming")
+	if c.cost == 0 || c.flesh.cost == 0 {
+		t.Errorf("it emptied itself rather than trimming: %d and %d",
+			c.cost, c.flesh.cost)
 	}
 	sound(t, c)
 }
 
 // Eviction that takes a whole run leaves nothing behind it: no run of no
-// records, no place in the lookup that no run holds, no record nothing places,
-// no cost still counted.
+// records, no place in the lookup that no run holds, no cost still counted.
 func TestEvictionLeavesNothingDangling(t *testing.T) {
-	one := ent(1).cost
-	c := newCache(one * 6)
+	c := sized(6, 6)
 	for i := 0; i < 6; i++ {
 		ds := over(string(rune('a' + i)))
 		filed(c, ds, nil, wad(1, 4))
@@ -882,18 +920,40 @@ func TestEvictionLeavesNothingDangling(t *testing.T) {
 	}
 }
 
-// Shrinking the cache evicts down to the new size at once.
+// Shrinking the cache evicts down to the new size at once, on both counts.
 func TestSettingTheLimitEvictsDownToIt(t *testing.T) {
-	one := ent(1).cost
-	c := newCache(one * 100)
+	c := sized(100, 100)
 	filed(c, over("files"), nil, wad(1, 30))
+	order, values := c.cost, c.flesh.cost
 
-	c.SetLimit(one * 5)
-	if c.Cost() > one*5 {
-		t.Errorf("after shrinking to %d it holds %d", one*5, c.Cost())
+	c.SetLimit(5*onePlace + 5*oneRecord)
+	if c.Cost() > c.Limit() {
+		t.Errorf("after shrinking to %d it holds %d", c.Limit(), c.Cost())
 	}
-	if c.Cost() == 0 {
-		t.Error("it emptied itself rather than trimming")
+	// Both halves give way, and not just whichever one the total happened to
+	// be under: they are sized apart, so they are shrunk apart.
+	if c.cost >= order || c.flesh.cost >= values {
+		t.Errorf("shrinking took the order from %d to %d and the values from "+
+			"%d to %d", order, c.cost, values, c.flesh.cost)
+	}
+	if c.cost == 0 || c.flesh.cost == 0 {
+		t.Errorf("it emptied itself rather than trimming: %d and %d",
+			c.cost, c.flesh.cost)
 	}
 	sound(t, c)
+}
+
+// A new cache splits its room between the order and the values, the order
+// getting the smaller share because a place is a fraction of a record.
+func TestANewCacheSplitsItsRoom(t *testing.T) {
+	c := newCache(1 << 20)
+	if c.Limit() != 1<<20 {
+		t.Errorf("a cache of %d says its limit is %d", 1<<20, c.Limit())
+	}
+	if c.limit >= c.flesh.limit {
+		t.Errorf("the order got %d of it and the values %d", c.limit, c.flesh.limit)
+	}
+	if c.limit == 0 {
+		t.Error("the order got none of it")
+	}
 }

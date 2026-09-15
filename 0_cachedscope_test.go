@@ -14,11 +14,9 @@ func whole(id int64) *cachedRecord {
 	}, true, 0)
 }
 
-// ent is one place in a run and the record standing there. Outside the cache
-// nothing else points at that record, so the two are made together.
-func ent(id int64) *entry { return placed(whole(id)) }
-
-func placed(r *cachedRecord) *entry { return newEntry(r) }
+// ent is one place in a run, which is an identity and two links. What the
+// record standing there holds is the flesh cache's, and costs this run nothing.
+func ent(id int64) *entry { return newEntry(NewInt(id)) }
 
 // run builds a cached scope holding the records from..to, guaranteed between
 // the ends given.
@@ -222,25 +220,6 @@ func TestADroppedRecordDoesNotReachWhatIsStillHeld(t *testing.T) {
 	}
 }
 
-// And a place the cache has dropped lets go of what it knew, for the same
-// reason one step along: a place still pointing at a record would hold that
-// record's fields on the heap where nothing could reach them, so their cost
-// would come off the total and not off the heap.
-func TestADroppedPlaceDoesNotHoldOnToWhatItKnew(t *testing.T) {
-	c := newCache(1 << 20)
-	filed(c, over("files"), nil, wad(1, 3))
-
-	c.mu.Lock()
-	s := c.sets["files"][0]
-	dropped := s.head
-	c.drop(s, true)
-	c.mu.Unlock()
-
-	if dropped.rec != nil {
-		t.Error("a dropped place still points at what it knew")
-	}
-}
-
 // Trimming an end keeps the claim true: the records go and the end moves in with
 // them, so what is guaranteed between the ends is as good as it was.
 func TestTrimmingAnEndKeepsTheClaimTrue(t *testing.T) {
@@ -280,17 +259,18 @@ func TestTrimmingTheWholeRunLeavesNothing(t *testing.T) {
 	}
 }
 
-// What an entry costs is worked out once and kept, so that eviction gives back
-// exactly what insertion took however wrong the estimate is.
-func TestAnEntrysCostIsWorkedOutOnceAndKept(t *testing.T) {
+// A place costs its identity and its links, and no part of what the record
+// standing there holds -- which is another cache's to count, and would be
+// counted twice if a run counted it too.
+func TestAPlaceCostsItsIdentityAndNotItsRecord(t *testing.T) {
 	s := run("files", nil, nil, 1, 4)
-	whole := s.Cost()
-
-	// Patched after it went in, as an invalidation would, it still costs what it
-	// cost.
-	s.head.rec.fields = append(s.head.rec.fields, Named("extra", "a much longer value"))
-	if freed := s.trimFront(1); s.Cost()+freed != whole {
-		t.Errorf("a patched entry gave back %d of the %d it took", freed, whole-s.Cost())
+	if want := 4 * (entryOverhead + costOfValue(NewInt(1))); s.Cost() != want {
+		t.Errorf("four places cost %d, and should cost %d", s.Cost(), want)
+	}
+	// And it gives back exactly what it took.
+	was := s.Cost()
+	if freed := s.trimFront(1); s.Cost()+freed != was {
+		t.Errorf("a place gave back %d of the %d it took", freed, was-s.Cost())
 	}
 }
 
@@ -302,21 +282,43 @@ func TestAnEntrysCostIsWorkedOutOnceAndKept(t *testing.T) {
 // somewhere.
 func TestTheEstimateTracksTheRealHeap(t *testing.T) {
 	const n = 20000
-	runtime.GC()
-	var before, after runtime.MemStats
-	runtime.ReadMemStats(&before)
 
-	s := run("files", nil, nil, 1, n)
+	// Both halves, because they are budgeted apart: a limit on the order and a
+	// limit on the values each mean nothing if its own estimate has drifted.
+	for _, c := range []struct {
+		what  string
+		build func() (int, any)
+	}{
+		{"the order", func() (int, any) {
+			s := run("files", nil, nil, 1, n)
+			return s.Cost(), s
+		}},
+		{"the values", func() (int, any) {
+			rc := newRecordCache(1 << 30)
+			for i := int64(1); i <= n; i++ {
+				rc.learn("files", whole(i))
+			}
+			return rc.cost, rc
+		}},
+	} {
+		runtime.GC()
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
 
-	runtime.GC()
-	runtime.ReadMemStats(&after)
-	real := int(after.HeapAlloc - before.HeapAlloc)
-	runtime.KeepAlive(s)
+		estimated, held := c.build()
 
-	ratio := float64(s.Cost()) / float64(real)
-	t.Logf("estimated %d bytes, the heap grew %d, ratio %.2f", s.Cost(), real, ratio)
-	if ratio < 0.5 || ratio > 2.0 {
-		t.Errorf("the estimate is %.2f of the real heap, too far off to cap "+
-			"anything by -- recalibrate the overheads in cachedrecord.go", ratio)
+		runtime.GC()
+		runtime.ReadMemStats(&after)
+		real := int(after.HeapAlloc - before.HeapAlloc)
+		runtime.KeepAlive(held)
+
+		ratio := float64(estimated) / float64(real)
+		t.Logf("%s: estimated %d bytes, the heap grew %d, ratio %.2f",
+			c.what, estimated, real, ratio)
+		if ratio < 0.5 || ratio > 2.0 {
+			t.Errorf("the estimate for %s is %.2f of the real heap, too far off "+
+				"to cap anything by -- recalibrate the overheads in "+
+				"cachedrecord.go", c.what, ratio)
+		}
 	}
 }

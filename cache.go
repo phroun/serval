@@ -10,23 +10,34 @@ package serval
 // meets another joins it, and a run asked for part of itself hands back a slice
 // of its own links.
 //
-// # Two tables, because there are two different things here
+// # Two caches, because there are two different things here
 //
 // Where a record STANDS belongs to a data set: a source, a sort and a filter
 // decide it between them, and change it between them. What a record HOLDS
 // belongs to the SOURCE: sort the same files by name and then by size and
 // record 7 carries the same fields in both.
 //
-// So they are kept apart. `sets` and `runs` hold the order -- runs of places,
-// with no fields in them at all -- and `recs` holds what each record is known
-// to carry, once per source, read by every data set drawing on it. See
-// cachedrecord.go.
+// So they are two caches and not two tables. This one is the SKELETON -- runs
+// of places, with no fields in them at all. cachedrecord.go is the FLESH, one
+// entry per source and identity, read by every data set drawing on that source.
+// Each has its own room, its own books and its own eviction, and neither keeps
+// the other alive:
+//
+//   - The flesh outlives the order. Close one sort and open another and the new
+//     order is new, while every value it needs is still here.
+//   - The order outlives the flesh. A run whose records have been evicted still
+//     knows what comes after what, which is what lets the fields be asked for
+//     again for exactly those records rather than the stretch being walked from
+//     the start.
+//
+// A place therefore holds an identity and not a pointer, and what is known
+// about the record standing there is looked up when it is wanted.
 //
 // One run per stretch of a sequence follows from that, and it is what the split
 // was for: a stretch fetched for `fields={ name }` and the same stretch fetched
 // for `fields={ name; size }` used to be two runs that could not answer each
 // other's question and would not join. Now they are one run, and the second
-// answer teaches the records what the first one did not know.
+// answer teaches the flesh what the first one did not know.
 //
 // # Keeping the hot records against a cold flood
 //
@@ -43,9 +54,9 @@ package serval
 //   - Every PLACE arrives on probation. A record handed out once is no evidence
 //     of anything -- a scan touches every record it passes exactly once.
 //   - A place handed out a SECOND time is warm, and moves to the protected
-//     segment. The place and not the record: what has proved itself is this
-//     reader coming back to this stretch of this sequence, and the same record
-//     standing somewhere else in another one has proved nothing.
+//     segment. The place and not the record: what has proved itself HERE is a
+//     reader coming back to this stretch of this sequence. What the record has
+//     proved is the flesh cache's own reckoning, on its own segments.
 //   - Eviction always takes from probation. Not preferentially: entirely. A
 //     place that has proved itself is only ever touched once there is no
 //     probationary place left anywhere in the cache to take, and it is that
@@ -76,9 +87,9 @@ package serval
 //
 // While that is true, the cache refuses to hold an answer whose records already
 // stand somewhere in this sequence: with no way to tell which ORDER is right,
-// the one already filed is kept and the new answer is dropped rather than
-// placed twice. What those records HOLD is not refused the same way -- knowledge
-// only grows, and a second answer about a record already known adds to it.
+// the one already filed is kept and the new answer is not placed a second time.
+// What those records HOLD is not refused the same way -- knowledge only grows,
+// and a second answer about a record already known adds to it.
 
 import (
 	"sync"
@@ -89,11 +100,19 @@ import (
 // bytes to reason in.
 const defaultCacheLimit = 64 << 20
 
-// The shares the two segments are held to, as numerator and denominator so that
-// they read as what they are.
+// The shares things are held to, as numerator and denominator so that they read
+// as what they are.
 const (
 	warmShare, warmOf = 4, 5 // the protected segment: four fifths
 	coldShare, coldOf = 1, 2 // one run's probationary part: one half
+
+	// boneShare is what the ORDER gets of a cache's room, the values getting
+	// the rest. A quarter, because a place is a fraction of what the record
+	// standing in it costs -- an identity and two links against however many
+	// fields -- so a quarter of the room buys a great deal of sequence, and a
+	// long sequence is what a reader scrolling has and what re-asking for is
+	// most expensive.
+	boneShare, boneOf = 1, 4
 )
 
 // hot is the process's cache. Global because a data set is global: two parts of
@@ -134,42 +153,51 @@ type cache struct {
 	// not, and a run never overlaps another of the same sequence.
 	at map[string]*entry
 
-	// recs finds what a record HOLDS by source and identity, which is what
-	// every data set over that source reads.
-	recs map[string]*cachedRecord
+	// flesh is what those records hold, which is a cache of its own with its
+	// own room and its own eviction. Nothing here points into it and nothing
+	// there points back: a place holds an identity, and what is known about
+	// that record is looked up when it is wanted. See cachedrecord.go.
+	//
+	// It is guarded by this lock, the two being reached together on every
+	// answer.
+	flesh *recordCache
 }
 
 func newCache(limit int) *cache {
 	return &cache{
-		limit: limit,
+		limit: limit * boneShare / boneOf,
 		next:  1, // zero names no run, so a half-built one cannot be mistaken for one
 
-		runs: map[cachedScopeID]*cachedScope{},
-		sets: map[string][]*cachedScope{},
-		at:   map[string]*entry{},
-		recs: map[string]*cachedRecord{},
+		runs:  map[cachedScopeID]*cachedScope{},
+		sets:  map[string][]*cachedScope{},
+		at:    map[string]*entry{},
+		flesh: newRecordCache(limit - limit*boneShare/boneOf),
 	}
 }
 
-// Cost is what the cache is holding, and Limit what it will hold.
+// Cost is what the cache is holding, and Limit what it will hold -- both halves
+// of it together, which is the figure anyone sizing it cares about.
 func (c *cache) Cost() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.cost
+	return c.cost + c.flesh.cost
 }
 
 func (c *cache) Limit() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.limit
+	return c.limit + c.flesh.limit
 }
 
-// SetLimit fixes how much the cache holds, evicting down to it at once.
+// SetLimit fixes how much the cache holds, evicting down to it at once. The
+// share between the order and the values is the same one a new cache is built
+// with.
 func (c *cache) SetLimit(n int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.limit = n
+	c.limit = n * boneShare / boneOf
 	c.room(0)
+	c.flesh.setLimit(n - c.limit)
 }
 
 // --- answering -----------------------------------------------------------
@@ -189,7 +217,7 @@ func (c *cache) SetLimit(n int) {
 // the end of the RUN, which is where its guarantee stops and not where the
 // records do, is a miss -- and so is meeting a record that has not been asked
 // about in enough detail yet.
-func (c *cache) serve(ds dataSet, wanted Record, sc *Scope) ([]*entry, Complete, bool) {
+func (c *cache) serve(ds dataSet, wanted Record, sc *Scope) ([]*cachedRecord, Complete, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -209,19 +237,24 @@ func (c *cache) serve(ds dataSet, wanted Record, sc *Scope) ([]*entry, Complete,
 	}
 
 	var done Complete
-	out := make([]*entry, 0, sc.Count)
+	out := make([]*cachedRecord, 0, sc.Count)
+	walked := make([]*entry, 0, sc.Count)
 	for at != nil && (sc.Count <= 0 || len(out) < sc.Count) {
 		if sc.Until != nil && Equal(at.id, sc.Until) {
 			done.Stop = StopJoined
 			break
 		}
-		if !at.rec.answers(wanted) {
-			// The order is known and what stands here is not known well enough.
-			// Which is the shape a top-up will take: the places are already
-			// right, and only these records need asking about.
+		r := c.flesh.get(ds.source, at.id)
+		if !r.answers(wanted) {
+			// The order is known and what stands here is not known well enough
+			// -- or is not known at all, the flesh having been let go of while
+			// the order was kept. Which is the shape a top-up will take: the
+			// places are already right, and only these records need asking
+			// about.
 			return nil, Complete{}, false
 		}
-		out = append(out, at)
+		out = append(out, r)
+		walked = append(walked, at)
 		at = at.along(sc.Reversed)
 	}
 
@@ -233,7 +266,7 @@ func (c *cache) serve(ds dataSet, wanted Record, sc *Scope) ([]*entry, Complete,
 		// The walk ran out inside a run whose far end is the sequence's own, so
 		// there is nothing past it. No watermark: nothing to be complete up to.
 		done.Stop = StopExhausted
-		c.handed(run, out)
+		c.handed(run, walked, out)
 		return out, done, true
 	default:
 		return nil, Complete{}, false // past the guarantee, not past the records
@@ -241,7 +274,7 @@ func (c *cache) serve(ds dataSet, wanted Record, sc *Scope) ([]*entry, Complete,
 	if len(out) > 0 {
 		done.Watermark = out[len(out)-1].id
 	}
-	c.handed(run, out)
+	c.handed(run, walked, out)
 	return out, done, true
 }
 
@@ -292,10 +325,16 @@ func (s *cachedScope) beyond(back bool) *Value {
 	return s.end
 }
 
-// handed marks records as given out, which is what decides what is worth
-// keeping. A record given out a second time has proved something a record given
-// out once has not.
-func (c *cache) handed(run *cachedScope, es []*entry) {
+// handed marks what was given out, which is what decides what is worth keeping.
+// A thing given out a second time has proved something a thing given out once
+// has not.
+//
+// Both halves, each on its own reckoning: the places here, and the records in
+// the cache that holds them. They are the same walk and they part company at
+// once -- a stretch read twice in one order has proved its places, while the
+// records standing in it may have been read a dozen times through other orders
+// or not at all.
+func (c *cache) handed(run *cachedScope, es []*entry, rs []*cachedRecord) {
 	for _, e := range es {
 		c.tick++
 		if e.hit != 0 && !e.warm {
@@ -305,6 +344,9 @@ func (c *cache) handed(run *cachedScope, es []*entry) {
 		e.hit = c.tick
 	}
 	c.capWarm()
+	for _, r := range rs {
+		c.flesh.handed(r)
+	}
 }
 
 // --- filing --------------------------------------------------------------
@@ -316,8 +358,10 @@ func (c *cache) handed(run *cachedScope, es []*entry) {
 // of the sequence itself, which is the stronger claim and is spelled as no end
 // at all. Read backwards the two ends swap, the records arriving furthest-first.
 //
-// Nothing is held for a refusal, for an empty answer, or for an answer whose
-// records already stand somewhere in this sequence.
+// What the answer says its records HOLD is always taken: knowledge only grows,
+// and the flesh cache takes it whether or not anything is placed. What the
+// answer says about ORDER is refused for an empty answer, for a refusal, and
+// where those records already stand somewhere in this sequence.
 func (c *cache) hold(ds dataSet, sc *Scope, recs []*cachedRecord, done Complete) {
 	if done.Error != "" || len(recs) == 0 {
 		return
@@ -325,43 +369,42 @@ func (c *cache) hold(ds dataSet, sc *Scope, recs []*cachedRecord, done Complete)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// The values first, and unconditionally. Two answers about one record of
+	// one source do not contradict each other while nothing decides a held
+	// value is stale, so what this one knows is added to what is known however
+	// the placement below goes.
+	for _, r := range recs {
+		c.flesh.learn(ds.source, r)
+	}
+
 	// An answer whose records already stand somewhere in this sequence is not
 	// placed again -- with nothing yet to decide which ORDER is right, the one
 	// already filed is kept. Nor is one that names a record twice, which is two
 	// places for one record and no order in which both are right.
 	//
-	// What those records HOLD is another matter: two answers about one record
-	// of one source do not contradict each other while nothing decides a held
-	// value is stale, so the knowledge is taken even though the placement is
-	// refused.
-	//
 	// Which is what a top-up is. Ask a stretch for `fields={ name }`, then the
 	// same stretch for `fields={ name; size }`: the second answer says nothing
-	// new about where anything stands, and everything new about what it holds.
+	// new about where anything stands, and everything new about what it holds
+	// -- and the values above have already taken it.
 	twice := make(map[string]bool, len(recs))
 	for _, r := range recs {
 		k := keyed(ds.set, r.id)
 		if c.at[k] != nil || twice[k] {
-			c.teach(ds.source, recs)
 			return
 		}
 		twice[k] = true
 	}
 
-	// What each record holds is filed first, because that is what a place
-	// costs and the trim below is a cost. A record already known learns what
-	// this answer brought and keeps what it had; one nothing has seen is filed
-	// as it stands.
 	run := &cachedScope{set: ds.set}
 	if sc.Reversed {
 		run.begin, run.end = done.Watermark, sc.After
 		for _, r := range recs {
-			run.pushFront(newEntry(c.knew(ds.source, r)))
+			run.pushFront(newEntry(r.id))
 		}
 	} else {
 		run.begin, run.end = sc.After, done.Watermark
 		for _, r := range recs {
-			run.pushBack(newEntry(c.knew(ds.source, r)))
+			run.pushBack(newEntry(r.id))
 		}
 	}
 
@@ -372,29 +415,21 @@ func (c *cache) hold(ds dataSet, sc *Scope, recs []*cachedRecord, done Complete)
 	// the back of what just came and will not be asking for the front of it
 	// again. Which end of the run that is depends on which way the walk went.
 	//
-	// Then it is measured AGAIN, because making room can hand this run a charge
-	// it did not arrive with: where it shares a record with a run being evicted
-	// and that run held the place carrying what the record costs, the charge
-	// comes here. This run is not in the table while that happens, so it lands
-	// on the place and not on the run. Cutting down and making room go round
-	// until the run is the size it was counted at, which they reach because a
-	// pass that is not the last one has evicted something, and there is only so
-	// much to evict.
-	for {
-		for max := c.limit * coldShare / coldOf; run.cold > max && run.n > 0; {
-			c.shed(run, !sc.Reversed)
-		}
-		if run.n == 0 {
-			return // a cache too small to hold one record of it holds none
-		}
-		was := run.cost
-		c.room(run.cost)
-		run.retotal()
-		if run.cost == was {
-			break
+	// It is the ORDER being cut down here and not the values. The flesh has its
+	// own room and its own defence against the same flood, on its own segments:
+	// what a long answer pours in there is cold, and cold is what gives way.
+	for max := c.limit * coldShare / coldOf; run.cold > max && run.n > 0; {
+		if sc.Reversed {
+			run.trimBack(1)
+		} else {
+			run.trimFront(1)
 		}
 	}
+	if run.n == 0 {
+		return // a cache too small to hold one place of it holds none
+	}
 
+	c.room(run.cost)
 	c.cost += run.cost
 	for _, e := range run.all() {
 		c.at[keyed(ds.set, e.id)] = e
@@ -417,113 +452,6 @@ func (c *cache) hold(ds dataSet, sc *Scope, recs []*cachedRecord, done Complete)
 		c.forget(after)
 	}
 	c.capCold(run, sc.Reversed)
-}
-
-// knew files what an answer said about one record, and gives back what the
-// cache now knows about it -- which is the copy every data set over this source
-// reads.
-//
-// A record nothing has seen is filed as it stands, and the place about to point
-// at it takes on what it costs. One already known LEARNS: what it had it keeps,
-// what this answer brought and it had not it takes, and the difference is
-// charged to the place already carrying what it costs.
-func (c *cache) knew(src string, r *cachedRecord) *cachedRecord {
-	k := keyed(src, r.id)
-	held := c.recs[k]
-	if held == nil {
-		r.src = src
-		c.recs[k] = r
-		return r
-	}
-	if d := held.learn(r.fields, r.whole, r.gen); d != 0 && len(held.refs) > 0 {
-		c.charge(held.refs[0], d)
-	}
-	return held
-}
-
-// charge moves a cost onto one place, and onto everything that counts that
-// place: the run it stands in, the protected total if it has proved itself, and
-// the cache's own.
-//
-// A place whose run is not in the table yet is one still being built, and its
-// cost reaches the books whole when the run is filed -- so nothing is added
-// here, and nothing can be: the run it belongs to has no id to find it by. That
-// is why an answer naming one record twice is refused above. It is the one way
-// a charge could be handed on to a place that is not filed yet.
-func (c *cache) charge(e *entry, d int) {
-	if d == 0 {
-		return
-	}
-	e.cost += d
-	s := c.runs[e.scope]
-	if s == nil {
-		return
-	}
-	s.cost += d
-	if e.warm {
-		c.warm += d
-	} else {
-		s.cold += d
-	}
-	c.cost += d
-}
-
-// teach files what an answer said about records that are already known, and
-// places nothing.
-//
-// Only records already known: one nothing has ever placed would be knowledge
-// with nowhere to hang, which nothing would ever let go of. The source will say
-// it again if it is ever asked.
-func (c *cache) teach(src string, recs []*cachedRecord) {
-	for _, r := range recs {
-		if c.recs[keyed(src, r.id)] != nil {
-			c.knew(src, r)
-		}
-	}
-}
-
-// shed drops one record off an end of a run that is not yet in the cache's
-// books, which is what cutting a flood down to size amounts to. What it takes
-// off the cache is the record, where nothing else was pointing at it.
-func (c *cache) shed(s *cachedScope, front bool) {
-	e := s.head
-	if front {
-		s.trimFront(1)
-	} else {
-		e = s.tail
-		s.trimBack(1)
-	}
-	c.release(e)
-}
-
-// release lets go of one place's claim on what it knew.
-//
-// The last claim to go takes the knowledge with it: a record no sequence puts
-// anywhere is not worth the room, and the source will say it again if it is
-// ever asked. Where some other place still points there, the one that carried
-// what the record cost hands that on as it goes, so the charge outlives the
-// place that happened to arrive first.
-func (c *cache) release(e *entry) {
-	r := e.rec
-	if r == nil {
-		return
-	}
-	e.rec = nil
-	carried := len(r.refs) > 0 && r.refs[0] == e
-	kept := r.refs[:0]
-	for _, held := range r.refs {
-		if held != e {
-			kept = append(kept, held)
-		}
-	}
-	r.refs = kept
-	if len(r.refs) == 0 {
-		delete(c.recs, keyed(r.src, r.id))
-		return
-	}
-	if carried {
-		c.charge(r.refs[0], r.cost)
-	}
 }
 
 // endingAt and beginningAt are the runs `not` would meet. Runs of one data set
@@ -574,15 +502,17 @@ func (s *cachedScope) all() []*entry {
 
 // room evicts until n more will fit.
 //
-// Probation first and entirely: every unwarm record in the cache goes before a
+// Probation first and entirely: every unwarm place in the cache goes before a
 // warm one is touched, which is the rule a flood cannot get around. Only when
 // there is nothing left on probation anywhere does the coldest protected end
-// give way, and a cache of nothing but proven records would otherwise wedge --
+// give way, and a cache of nothing but proven places would otherwise wedge --
 // full, unable to evict, and unable to hold anything new.
 //
-// Each pass drops one record, so this terminates whatever is held; it gives up
+// Each pass drops one place, so this terminates whatever is held; it gives up
 // only when the cache is empty and n still does not fit, which is a limit
-// smaller than one record.
+// smaller than one place. What the record standing there HOLDS is untouched: it
+// is the flesh cache's, evicted on its own terms, and a record nothing places
+// any more is knowledge that is still true.
 func (c *cache) room(n int) {
 	for c.cost+n > c.limit {
 		s, _, front := c.coldestEnd(false)
@@ -596,7 +526,7 @@ func (c *cache) room(n int) {
 	}
 }
 
-// capWarm holds the protected segment under its share, so that records which
+// capWarm holds the protected segment under its share, so that places which
 // have proved themselves cannot fill the cache and leave nothing on probation
 // with a chance to prove anything.
 func (c *cache) capWarm() {
@@ -612,8 +542,8 @@ func (c *cache) capWarm() {
 
 // capCold holds ONE run's probationary part under its share, which is the flood
 // defence: an answer streaming in is entirely cold, so past the cap it eats its
-// own far end instead of the rest of the cache. Records that have been read
-// more than once are not charged against the cap and are never taken for it.
+// own far end instead of the rest of the cache. Places that have been read more
+// than once are not charged against the cap and are never taken for it.
 //
 // Which end is the far one is the direction of the answer that just arrived,
 // and not which end was read longest ago -- records that have just come in have
@@ -633,12 +563,13 @@ func (c *cache) capCold(s *cachedScope, back bool) {
 	}
 }
 
-// coldestEnd is the least recently handed record at the end of any run, in the
-// segment asked for. Only ends: taking a record out of the middle of a run
-// would cost a run rather than freeing one.
+// coldestEnd is the least recently handed place at the end of any run, in the
+// segment asked for. Only ends: taking a place out of the middle of a run would
+// cost a run rather than freeing one, which is why the flesh cache -- where
+// there is no run to break -- keeps lists instead.
 //
-// Every run is looked at, which is a walk of the runs per record evicted. Runs
-// are few and records are many, so that is cheap; an eviction heap would be
+// Every run is looked at, which is a walk of the runs per place evicted. Runs
+// are few and places are many, so that is cheap; an eviction heap would be
 // worth it only once it is not.
 func (c *cache) coldestEnd(warm bool) (best *cachedScope, at *entry, front bool) {
 	consider := func(s *cachedScope, e *entry, f bool) {
@@ -656,8 +587,9 @@ func (c *cache) coldestEnd(warm bool) (best *cachedScope, at *entry, front bool)
 	return best, at, front
 }
 
-// drop takes one record off an end of a run, moving the run's end in with it so
-// that what it still claims stays true.
+// drop takes one place off an end of a run, moving the run's end in with it so
+// that what it still claims stays true. What that record HOLDS stays where it
+// is: the flesh is another cache, and knowledge nothing places is still true.
 func (c *cache) drop(s *cachedScope, front bool) {
 	e := s.tail
 	if front {
@@ -676,7 +608,6 @@ func (c *cache) drop(s *cachedScope, front bool) {
 	} else {
 		c.cost -= s.trimBack(1)
 	}
-	c.release(e)
 	if s.n == 0 {
 		c.forget(s)
 	}
