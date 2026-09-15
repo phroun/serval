@@ -45,6 +45,12 @@ It's a sibling to the rest of the line: **Mew** (text editor), **PurfecTerm**
   than making another; two runs that meet join; a run cut in two by an insert
   is two runs and not a re-query. Eviction is segmented, so a scan of a million
   records cannot flush out the handful you were actually using.
+- **Caching is a wrapper.** `NewCachedSource(src)` answers out of what the
+  process already holds wherever it can and asks the source below wherever it
+  cannot, filing what comes back. It is a Source like the other two, so it
+  composes with them in either order — and a source that should not be cached
+  simply is not wrapped. There is one cache and one quota for the whole
+  process, however many wrappers draw on it; `SetCacheLimit` sizes it.
 - **Order and values are two caches.** Where a record *stands* belongs to a data
   set — a source, a sort and a filter. What it *holds* belongs to the source,
   and is kept once there for every data set drawing on it. Each has its own
@@ -64,7 +70,7 @@ It's a sibling to the rest of the line: **Mew** (text editor), **PurfecTerm**
 ```go
 import "github.com/phroun/serval"
 
-src := serval.NewPSLSource(node, serval.Whole)
+src := serval.NewCachedSource(serval.NewPSLSource(node, serval.Whole))
 
 set, err := src.Open(&serval.Spec{
     Sort: []serval.SortLevel{{Field: "name"}},

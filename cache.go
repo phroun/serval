@@ -200,6 +200,22 @@ func (c *cache) SetLimit(n int) {
 	c.flesh.setLimit(n - c.limit)
 }
 
+// mostPlaces is how many places one run may hold, at a nominal cost each.
+//
+// It is what stops an answer being assembled whole in memory before the cache
+// gets a chance to say it was never entitled to the room: an answer past this
+// many is cut down as it arrives rather than afterwards. Nominal because a
+// place costs whatever its identity does, and the point is a bound rather than
+// a measurement -- what actually fits is settled when the run is filed.
+func (c *cache) mostPlaces() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if n := c.limit * coldShare / coldOf / (entryOverhead + valueOverhead); n > 1 {
+		return n
+	}
+	return 1 // a cache with room for nothing still sees one record at a time
+}
+
 // --- answering -----------------------------------------------------------
 
 // serve answers a scope from what is held, or says it cannot.
