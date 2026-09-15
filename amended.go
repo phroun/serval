@@ -164,16 +164,53 @@ func (a *AmendedSource) Forget(key *Value) {
 	a.mu.Unlock()
 }
 
-// learn writes down where a deleted record actually sat, from a copy the child
-// sent. The next scope over that scope of the sequence predicts its
-// shortfall instead of discovering it.
+// learn writes down the child's own version of a record this source amends,
+// from a copy the child sent.
+//
+// For a DELETION that is where the record sat, and the next scope over that
+// stretch predicts its shortfall instead of discovering it.
+//
+// For a REPLACEMENT it changes nothing about placement -- ours stands where its
+// own values put it -- and everything about counting. Whether a replacement
+// makes the sequence longer, shorter or neither is a question about two
+// records, and it cannot be answered while only one of them is here. See
+// RecordCount.
+//
+// An addition shadows nothing: it names no record of the child's, so there is
+// nothing of the child's under that key to remember.
 func (a *AmendedSource) learn(key *Value, fields Record) {
 	a.mu.Lock()
-	if am := a.amend[Key(key)]; am != nil && am.deleted {
+	defer a.mu.Unlock()
+	am := a.amend[Key(key)]
+	if am == nil || am.added {
+		return
+	}
+	am.seen = fields
+	if am.deleted {
 		// Not just a note: a deletion with a placement is one this source can
 		// rule out of a scope, so it moves from being counted for every scope
 		// to standing somewhere in the order.
-		am.seen = fields
+		a.gen++
+	}
+}
+
+// Stale says the child's own record under this key may have changed, so what
+// was shadowed of it is no longer to be trusted.
+//
+// This source holds no runs and no values, so it needs no extent and no reason:
+// what it keeps of the child is one record per amended key, and either that is
+// still right or it is not. Told, never decided -- the same rule as everywhere,
+// because a shadow is knowledge like any other and goes stale like any other.
+//
+// A count that was exact because of a shadow falls back to a floor, and a
+// deletion that had a placement goes back to being ruled out of no scope.
+func (a *AmendedSource) Stale(key *Value) {
+	if key == nil {
+		return
+	}
+	a.mu.Lock()
+	if am := a.amend[Key(key)]; am != nil && am.seen != nil {
+		am.seen = nil
 		a.gen++
 	}
 	a.mu.Unlock()
@@ -242,6 +279,67 @@ type amendedSet struct {
 
 // Close lets this sequence go, and the child's with it.
 func (s *amendedSet) Close() { s.child.Close() }
+
+// RecordCount is the child's figure, moved by what this source lays over it.
+//
+// Each amendment is worth -1, 0 or +1, and which of those it is turns on one
+// question asked twice: does the filter admit the child's version, and does it
+// admit ours? Where both answers are here the figure stays exact. Where the
+// child's is not -- nothing of that record has crossed yet, so there is nothing
+// shadowed -- the answer is a range, and a range is a floor.
+//
+//	amendment      shadowed                       not shadowed
+//	added          in: +1, out: 0                 the same: it shadows nothing
+//	added, clashed 0: the child's record stands    0
+//	deleted        was in: -1, was out: 0         floor -1
+//	replaced       in-before against in-after      in now: floor +0, out: floor -1
+//
+// A DELETION of a record the filter never admitted costs nothing at all, which
+// is the case a floor alone would have got wrong in the expensive direction: it
+// would have said there might be one fewer when there certainly is not.
+//
+// An unclashed addition is taken at its word. Add says the key is the author's
+// to keep clear of the child's, and this believes that exactly as far as the
+// read path does -- ours goes out until a clash surfaces, and ours is counted
+// until a clash surfaces. An author who collides is wrong by one until the
+// child's copy crosses, in the figure and in the records alike.
+func (s *amendedSet) RecordCount() RecordCount {
+	n := CountOf(s.child)
+	f := s.spec.Filter
+
+	s.src.mu.Lock()
+	defer s.src.mu.Unlock()
+	for _, am := range s.src.amend {
+		switch {
+		case am.clashed:
+			// The child's record stands, and the child has counted it.
+		case am.added:
+			if Match(am.key, am.fields, f) {
+				n = n.Add(1)
+			}
+		case am.seen == nil:
+			// Nothing of the child's has crossed, so whether it was ever in
+			// this sequence is not known here.
+			if am.deleted || !Match(am.key, am.fields, f) {
+				n = n.Doubt(1) // it may have been in, and is not now
+			} else {
+				n = n.Doubt(0) // it is in now, and may already have been
+			}
+		case am.deleted:
+			if Match(am.key, am.seen, f) {
+				n = n.Take(1)
+			}
+		default:
+			was, now := Match(am.key, am.seen, f), Match(am.key, am.fields, f)
+			if was && !now {
+				n = n.Take(1)
+			} else if now && !was {
+				n = n.Add(1)
+			}
+		}
+	}
+	return n
+}
 
 // Read answers one scope out of the child's records and this source's own.
 func (s *amendedSet) Read(sc *Scope, out Sink) error {
@@ -438,7 +536,11 @@ func (m *merge) theirs(key *Value, fields Record, has Totals, whole bool) error 
 			return nil
 		}
 		if !am.added {
-			return nil // a replacement: ours stands in its place
+			// A replacement: ours stands in its place. Theirs is shadowed on
+			// the way past, because whether ours makes the sequence longer,
+			// shorter or neither is a question about both of them.
+			m.set.src.learn(key, fields)
+			return nil
 		}
 		// An addition whose key is the child's after all. The child's record
 		// is the one that stands, and this is the only moment that can be

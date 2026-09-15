@@ -901,3 +901,126 @@ func TestBothRunsOfTheArrangementAreInOrder(t *testing.T) {
 		}
 	}
 }
+
+// --- how many there are ---------------------------------------------------
+
+// small is the sequence of records under a kilobyte, which twoWays has two of:
+// go.mod at 96 and build.sh at 310.
+func small() *Spec {
+	return &Spec{Sort: []SortLevel{{Field: ".size"}}, Filter: lt(".size", 1000)}
+}
+
+// An amendment is worth -1, 0 or +1, and which of those it is turns on one
+// question asked twice: does the filter admit the child's version, and does it
+// admit ours? The child's is here only once something of it has crossed, so the
+// same amendment is a floor before that and a figure after it.
+func TestAReplacementIsCountedOnceTheChildsVersionIsShadowed(t *testing.T) {
+	a := amendable(t)
+	a.Replace(key(0), fields("tiny", 50)) // README.md was 2048, so out; now in
+
+	// Nothing of the child's has crossed, so whether that record was ever in
+	// this sequence is not known here -- and it is in now, so the figure can
+	// only be the same or one more.
+	if got := counted(t, a, small()); got != "at least 2" {
+		t.Errorf("before the child's version crossed it counted %s", got)
+	}
+
+	// Reading the sequence the record IS in shadows it on the way past.
+	read(t, a, bySize(), &Scope{Count: 9})
+
+	if got := counted(t, a, small()); got != "3" {
+		t.Errorf("with both versions here it counted %s", got)
+	}
+}
+
+// A deletion of a record the filter never admitted costs nothing at all, which
+// is the case a floor alone gets wrong in the expensive direction: it says
+// there may be one fewer when there certainly is not.
+func TestADeletionOutsideTheFilterCostsNothing(t *testing.T) {
+	a := amendable(t)
+	a.Delete(key(3), nil) // parser.go at 14022, which `small` never admitted
+
+	if got := counted(t, a, small()); got != "at least 1" {
+		t.Errorf("with nothing shadowed it counted %s", got)
+	}
+
+	read(t, a, bySize(), &Scope{Count: 9})
+
+	if got := counted(t, a, small()); got != "2" {
+		t.Errorf("knowing what it deleted, it counted %s", got)
+	}
+}
+
+// A deletion of one the filter DID admit is one fewer, exactly.
+func TestADeletionInsideTheFilterIsOneFewer(t *testing.T) {
+	a := amendable(t)
+	a.Delete(key(2), fields("go.mod", 96)) // stated outright, so nothing to read
+
+	if got := counted(t, a, small()); got != "1" {
+		t.Errorf("it counted %s", got)
+	}
+}
+
+// An addition shadows nothing -- it names no record of the child's -- so it is
+// counted or not by its own values alone, and either way exactly.
+func TestAnAdditionIsCountedByItsOwnValues(t *testing.T) {
+	a := amendable(t)
+	a.Add(key(9), fields("tiny", 50))
+	a.Add(key(8), fields("huge", 99999))
+
+	if got := counted(t, a, small()); got != "3" {
+		t.Errorf("with one addition in and one out it counted %s", got)
+	}
+}
+
+// A shadow is knowledge like any other, so it goes stale like any other -- and
+// a figure that was exact because of one falls back to a floor when it goes.
+func TestAStaleShadowCostsTheExactness(t *testing.T) {
+	a := amendable(t)
+	a.Replace(key(0), fields("tiny", 50))
+	read(t, a, bySize(), &Scope{Count: 9})
+	if got := counted(t, a, small()); got != "3" {
+		t.Fatalf("it counted %s", got)
+	}
+
+	a.Stale(key(0))
+
+	if got := counted(t, a, small()); got != "at least 2" {
+		t.Errorf("after the shadow went it counted %s", got)
+	}
+}
+
+// A source amending one that will not count has nothing to move, and says so
+// rather than counting only its own amendments.
+func TestAmendingASourceThatWillNotCountSaysNothing(t *testing.T) {
+	a := NewAmendedSource(mute(mustPSL(t, twoWays)))
+	a.Add(key(9), fields("tiny", 50))
+
+	if got := counted(t, a, small()); got != "at least 1" {
+		t.Errorf("it counted %s", got)
+	}
+}
+
+// An addition is taken at its word until a clash surfaces, in the figure
+// exactly as in the records.
+//
+// Add says the key is the author's to keep clear of the child's, and nothing
+// asks to find out otherwise -- it surfaces when the child's copy arrives. So
+// an author who collides is over by one until that moment, and right
+// afterwards: from then on the child's record is the one that stands, and the
+// child is the one counting it.
+func TestAClashedAdditionIsCountedByTheChildAndNotTwice(t *testing.T) {
+	a := amendable(t)
+	a.Add(key(2), fields("tiny", 50)) // key 2 is the child's go.mod, at 96
+
+	if got := counted(t, a, small()); got != "3" {
+		t.Errorf("before the clash surfaced it counted %s", got)
+	}
+
+	// The child's copy crossing is the only moment the clash can be found out.
+	read(t, a, bySize(), &Scope{Count: 9})
+
+	if got := counted(t, a, small()); got != "2" {
+		t.Errorf("once the child's record stood it counted %s", got)
+	}
+}

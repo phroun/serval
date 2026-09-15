@@ -495,6 +495,24 @@ func (s *composedSet) Close() {
 	}
 }
 
+// RecordCount is every include's figure added together.
+//
+// Sound because the includes cannot overlap: a composed key carries the name of
+// the include that issued it, so no record of one is ever a record of another
+// and nothing is counted twice however alike two includes look.
+//
+// Exact only where every include is exact -- a sum with an unknown term in it is
+// the sum of what is known and at least that much. Which is also the useful
+// case: three includes that count and one that cannot still leave a figure the
+// fourth can only raise.
+func (s *composedSet) RecordCount() RecordCount {
+	n := Exactly(0)
+	for _, p := range s.parts {
+		n = n.And(CountOf(p.set))
+	}
+	return n
+}
+
 // Read answers one scope out of every include at once.
 //
 // The scope's ends are identities of this sequence's own making, and an

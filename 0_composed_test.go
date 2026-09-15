@@ -1057,3 +1057,36 @@ func TestUntilReachesTheIncludes(t *testing.T) {
 		t.Errorf("it stopped at that record and said %q", done.Stop)
 	}
 }
+
+// --- how many there are ---------------------------------------------------
+
+// Every include's figure, added. Sound because the includes cannot overlap: a
+// composed key carries the name of the include that issued it, so no record of
+// one is ever a record of another.
+func TestAComposedSequenceCountsEveryInclude(t *testing.T) {
+	if got := counted(t, twoIncludes(t), unsorted()); got != "5" {
+		t.Errorf("three records and two counted as %s", got)
+	}
+	// The same source twice is twice as many records, because they are twice as
+	// many records -- each under its own include's name.
+	both := composed(t,
+		Include{Name: "one", Source: mustPSL(t, rightDoc)},
+		Include{Name: "two", Source: mustPSL(t, rightDoc)})
+	if got := counted(t, both, unsorted()); got != "4" {
+		t.Errorf("one source included twice counted as %s", got)
+	}
+}
+
+// One include that cannot count leaves the whole thing a floor -- a sum with an
+// unknown term in it is the sum of what is known and at least that much. Which
+// is the useful case rather than the lost one: the figure is still a floor the
+// silent include can only raise.
+func TestAnIncludeThatWillNotCountLeavesAFloor(t *testing.T) {
+	c := composed(t,
+		Include{Name: "left", Source: mustPSL(t, leftDoc)},
+		Include{Name: "right", Source: mute(mustPSL(t, rightDoc))})
+
+	if got := counted(t, c, unsorted()); got != "at least 3" {
+		t.Errorf("it counted %s", got)
+	}
+}

@@ -75,6 +75,9 @@ It's a sibling to the rest of the line: **Mew** (text editor), **PurfecTerm**
   records has it for free, one that has read part of a sequence has a floor, and
   a notice moves it: `Added` is one more, `Removed` one fewer, and anything
   leaving membership in doubt lowers the floor rather than losing the figure.
+  Composing adds the includes' figures; amending asks one question twice —
+  does the filter admit the child's version, and does it admit ours — which is
+  exact wherever the child's has been seen, and a floor where it has not.
 - **What is depended on can be stated.** `Covers(spec)` is the stretches of one
   sequence actually held, read off the runs rather than tracked beside them, and
   `Spec.Roles()` groups a sequence's fields by the part each plays — so a change
