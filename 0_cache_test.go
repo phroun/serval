@@ -40,15 +40,23 @@ func wad(from, to int64) []*cachedRecord {
 }
 
 // slims is the same stretch as SUBSETS: only the fields named, which is what a
-// query asking `fields={ ... }` leaves behind.
+// query asking `fields={ ... }` leaves behind. The records are said to have one
+// more named member than was sent, so that a subset stays a subset however many
+// of them are asked for.
 func slims(from, to int64, names ...string) []*cachedRecord {
+	return slimsOf(Totals{Named: len(names) + 1}, from, to, names...)
+}
+
+// slimsOf is the same, saying exactly how many members the records have.
+func slimsOf(has Totals, from, to int64, names ...string) []*cachedRecord {
+	more := has
 	out := []*cachedRecord{}
 	for i := from; i <= to; i++ {
 		f := Record{}
 		for _, n := range names {
 			f = append(f, Named(n, i))
 		}
-		out = append(out, newRecord("", NewInt(i), f, false, 0))
+		out = append(out, newRecord("", NewInt(i), f, more, 0))
 	}
 	return out
 }
@@ -342,7 +350,7 @@ func TestAnAnswerThatArrivesWholeSettlesEverything(t *testing.T) {
 	}
 
 	filed(c, over("files"), nil, wad(1, 3))
-	if r := known(c, "files", 1); r == nil || !r.whole {
+	if r := known(c, "files", 1); r == nil || !r.entire() {
 		t.Error("an answer that arrived whole left the record a subset")
 	}
 	if _, _, ok := asked(c, over("files"), nil, &Scope{Count: 3}); !ok {
@@ -361,8 +369,8 @@ func TestAWholeRecordLearnsNothingMore(t *testing.T) {
 
 	filed(c, over("files"), nil, slims(1, 3, "thumbnail"))
 	r := known(c, "files", 1)
-	if r == nil || !r.whole {
-		t.Error("a whole record stopped being whole")
+	if r == nil || !r.entire() {
+		t.Error("a record known entire stopped being so")
 	}
 	if len(r.fields) != held {
 		t.Errorf("a whole record of %d fields took another and holds %s", held, r.fields)
@@ -417,9 +425,9 @@ func TestWhatOneDataSetLearnsTheOtherKnows(t *testing.T) {
 
 	filed(c, byName, nil, slims(1, 3, "name"))
 	filed(c, bySize, nil, []*cachedRecord{
-		newRecord("", NewInt(3), Record{Named("name", 3), Named("size", 30)}, false, 0),
-		newRecord("", NewInt(2), Record{Named("name", 2), Named("size", 20)}, false, 0),
-		newRecord("", NewInt(1), Record{Named("name", 1), Named("size", 10)}, false, 0),
+		newRecord("", NewInt(3), Record{Named("name", 3), Named("size", 30)}, Totals{Named: 3}, 0),
+		newRecord("", NewInt(2), Record{Named("name", 2), Named("size", 20)}, Totals{Named: 3}, 0),
+		newRecord("", NewInt(1), Record{Named("name", 1), Named("size", 10)}, Totals{Named: 3}, 0),
 	})
 
 	both := Record{Named("name", 0), Named("size", 0)}
@@ -534,7 +542,7 @@ func TestANameAndTheIdentityAfterItDoNotRunTogether(t *testing.T) {
 
 	place := func(ds dataSet, id *Value, who string) {
 		c.hold(ds, &Scope{Count: 1},
-			[]*cachedRecord{newRecord("", id, Record{Named("name", who)}, false, 0)},
+			[]*cachedRecord{newRecord("", id, Record{Named("name", who)}, Totals{Named: 2}, 0)},
 			Complete{Stop: StopFilled, Watermark: id})
 	}
 	place(one, odd, "left")

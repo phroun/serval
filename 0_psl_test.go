@@ -59,6 +59,7 @@ type collector struct {
 	keys    []string
 	fields  []Record
 	whole   []bool
+	has     []Totals
 	done    Complete
 	ended   bool
 	ordered bool
@@ -74,17 +75,18 @@ func (c *collector) Ordered() {
 }
 
 func (c *collector) Record(key *Value, fields Record) error {
-	return c.took(key, fields, true)
+	return c.took(key, fields, Tally(fields), true)
 }
 
-func (c *collector) Subset(key *Value, fields Record) error {
-	return c.took(key, fields, false)
+func (c *collector) Subset(key *Value, fields Record, has Totals) error {
+	return c.took(key, fields, has, false)
 }
 
-func (c *collector) took(key *Value, fields Record, whole bool) error {
+func (c *collector) took(key *Value, fields Record, has Totals, whole bool) error {
 	c.keys = append(c.keys, valueText(key))
 	c.fields = append(c.fields, fields)
 	c.whole = append(c.whole, whole)
+	c.has = append(c.has, has)
 	return nil
 }
 
@@ -816,11 +818,14 @@ func (s *listSet) Read(sc *Scope, out Sink) error {
 		fields := Record{
 			Named("key", r.key), Named(".name", r.name), Named(".size", r.size),
 		}
-		hand := out.Record
+		var err error
 		if s.subsets {
-			hand = out.Subset
+			// One member more than was sent, so that a subset stays a subset.
+			err = out.Subset(NewInt(r.key), fields, Totals{Named: 4})
+		} else {
+			err = out.Record(NewInt(r.key), fields)
 		}
-		if err := hand(NewInt(r.key), fields); err != nil {
+		if err != nil {
 			return err
 		}
 		sent++

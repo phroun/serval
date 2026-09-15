@@ -41,13 +41,32 @@ package serval
 // than put in its place. A field already here keeps the value it has, because
 // nothing yet decides that a held value is stale and the answer already filed
 // is as good as the one that just arrived; a field this answer brought and the
-// last one did not is new knowledge, and is kept. A record that ever arrived
-// WHOLE is whole from then on, and answers every question about itself without
-// being asked again.
+// last one did not is new knowledge, and is kept.
 //
 // Which is what makes a top-up possible: a query wanting one field more than is
 // known can ask for that field alone, over the records a run already places,
 // and file the answer here.
+//
+// # Three ways to know an answer
+//
+// A record answers a question about a field it CARRIES, obviously. It also
+// answers one about a field it carries as an ABSENCE -- a name that was asked
+// about and is not there, kept as a member with nothing under it so that nobody
+// asks again.
+//
+// And it answers one the TOTALS settle. Every record says how many members it
+// has, ordered and named counted apart, whether or not they were all sent. A
+// record with three ordered members has `0`, `1` and `2` and nothing else, so
+// `3` is absent without anyone being asked. One with eight named members, eight
+// of which are here, has nothing left for a ninth name to be. Which is what
+// turns "I have seven of eight and you want two more" into one question about
+// one field instead of two about two -- and "I have eight of eight" into no
+// question at all.
+//
+// A record whose members are all known is known ENTIRE, and answers anything
+// asked about it. That is not a flag a source sets: it is what the two counts
+// say, so a run of subsets that between them cover a record leaves it entire
+// without anybody deciding to.
 
 // A cachedRecord is what the cache knows about one record of one source.
 type cachedRecord struct {
@@ -56,9 +75,17 @@ type cachedRecord struct {
 	src string
 	id  *Value
 
-	// fields is what is known, and whole says it is all of it.
+	// fields is what is known: the members that have been seen, and the names
+	// that have been ASKED about and are not there, which are kept as absences
+	// so that nobody asks again.
 	fields Record
-	whole  bool
+
+	// has is how many members the record has altogether, as its source said,
+	// and knows how many of them are here. When knows reaches has the record is
+	// known ENTIRE, and answers anything asked about it.
+	//
+	// Two counts each, because they settle different questions -- see Totals.
+	has, knows Totals
 
 	// cost is what these fields cost to hold, kept in step with them.
 	cost int
@@ -83,12 +110,34 @@ type cachedRecord struct {
 	prev, next *cachedRecord
 }
 
-// newRecord is one record as an answer gave it.
-func newRecord(src string, id *Value, fields Record, whole bool, gen uint64) *cachedRecord {
+// newRecord is one record as an answer gave it: what it carries, and how many
+// members the record has altogether.
+func newRecord(src string, id *Value, fields Record, has Totals, gen uint64) *cachedRecord {
 	return &cachedRecord{
-		src: src, id: id, fields: fields, whole: whole, gen: gen,
+		src: src, id: id, fields: fields, gen: gen,
+		has: has, knows: Tally(fields),
 		cost: costOfFields(fields),
 	}
+}
+
+// entire reports whether every member the record has is here, which is what
+// lets it answer a question naming no fields at all.
+func (r *cachedRecord) entire() bool {
+	return r.knows.Ordered >= r.has.Ordered && r.knows.Named >= r.has.Named
+}
+
+// absent reports whether the record is KNOWN not to carry a name that is not
+// among its fields -- which is what the totals are for.
+//
+// An ordered member is settled by the count alone: a record with three of them
+// has `0`, `1` and `2` and nothing else, so `3` and everything past it is
+// absent. A named one is settled once as many are known as there are, there
+// being nothing left for another name to be.
+func (r *cachedRecord) absent(name string) bool {
+	if i, ok := MemberIndex(name); ok {
+		return i >= r.has.Ordered
+	}
+	return r.knows.Named >= r.has.Named
 }
 
 // answers reports whether what is known about this record answers a query
@@ -98,21 +147,23 @@ func newRecord(src string, id *Value, fields Record, whole bool, gen uint64) *ca
 // has to be here: a query naming a field this record has not got is a question
 // nothing held can answer, however many of its other fields are known.
 //
-// Wanting NOTHING in particular is wanting the record entire, which only a
-// whole record is. And a record this cache has let go of answers nothing, which
-// is the nil case: the order may still know where it stood.
+// Wanting NOTHING in particular is wanting the record entire. And a record this
+// cache has let go of answers nothing, which is the nil case: the order may
+// still know where it stood.
 func (r *cachedRecord) answers(wanted Record) bool {
 	if r == nil {
 		return false
 	}
-	if r.whole {
+	if r.entire() {
 		return true
 	}
-	if wanted == nil {
+	if len(wanted) == 0 {
 		return false
 	}
 	for _, w := range wanted {
-		if !r.fields.Has(w.Name) {
+		// Carried, carried as an absence, or settled by the totals. All three
+		// are knowing the answer; only the fourth case is a question.
+		if !r.fields.Has(w.Name) && !r.absent(w.Name) {
 			return false
 		}
 	}
@@ -122,10 +173,13 @@ func (r *cachedRecord) answers(wanted Record) bool {
 // learn adds what an answer said to what is known, and gives back what that
 // added to the cost.
 //
-// Nothing already known is overwritten. A record that was already whole learns
-// nothing, there being nothing left to learn.
-func (r *cachedRecord) learn(fields Record, whole bool, gen uint64) int {
-	if r.whole {
+// Nothing already known is overwritten, an absence included: a name already
+// filed as not there keeps that answer, two answers about one record of one
+// source not contradicting each other while nothing decides a held value is
+// stale. A record already known entire learns nothing, there being nothing left
+// to learn.
+func (r *cachedRecord) learn(fields Record, has Totals, gen uint64) int {
+	if r.entire() {
 		return 0
 	}
 	before := r.cost
@@ -135,9 +189,11 @@ func (r *cachedRecord) learn(fields Record, whole bool, gen uint64) int {
 		}
 		r.fields = append(r.fields, f)
 	}
-	if whole {
-		r.whole = true
-	}
+	// The newer statement of how many there are stands. A source counting a
+	// record it has just read is better placed than one counting it last time,
+	// and neither is guessing.
+	r.has = has
+	r.knows = Tally(r.fields)
 	r.gen = gen
 	r.cost = costOfFields(r.fields)
 	return r.cost - before
@@ -186,7 +242,7 @@ func (rc *recordCache) get(src string, id *Value) *cachedRecord {
 func (rc *recordCache) learn(src string, r *cachedRecord) {
 	k := keyed(src, r.id)
 	if held := rc.at[k]; held != nil {
-		d := held.learn(r.fields, r.whole, r.gen)
+		d := held.learn(r.fields, r.has, r.gen)
 		rc.cost += d
 		if held.warm {
 			rc.warm += d

@@ -64,9 +64,9 @@ func (k *countingSink) Record(id *Value, f Record) error {
 	k.src.sent++
 	return k.out.Record(id, f)
 }
-func (k *countingSink) Subset(id *Value, f Record) error {
+func (k *countingSink) Subset(id *Value, f Record, has Totals) error {
 	k.src.sent++
-	return k.out.Subset(id, f)
+	return k.out.Subset(id, f, has)
 }
 func (k *countingSink) Done(c Complete) { k.out.Done(c) }
 
@@ -246,6 +246,113 @@ func TestAQueryIsAnsweredOnlyWhereItsFieldsAreKnown(t *testing.T) {
 	}
 }
 
+// A field the record has not got comes back as an ABSENCE, and the next query
+// naming it is answered without the source being asked again.
+//
+// `plain` is a record with no `.size`: it is a string rather than a list, so it
+// carries a key and a value and nothing else.
+func TestAFieldARecordHasNotGotIsAnsweredWithoutAskingTwice(t *testing.T) {
+	ownCache(t, 1<<20, 1<<20)
+	src, n := cached(t, doc)
+
+	sized := &Spec{Sort: []SortLevel{{Field: ".name"}},
+		Fields: Record{{Name: ".size"}}}
+	out, _ := draw(t, src, sized, &Scope{Count: 9})
+
+	plain := -1
+	for i, k := range out.keys {
+		if k == `"plain"` {
+			plain = i
+		}
+	}
+	if plain < 0 {
+		t.Fatalf("the record with no size never came out: %v", out.keys)
+	}
+	// Present with nothing under it: a guarantee, rather than a silence.
+	if !out.fields[plain].Has(".size") {
+		t.Errorf("the record with no size left it out: %s", out.fields[plain])
+	}
+	if out.fields[plain].Get(".size") != nil {
+		t.Errorf("the record with no size sent one: %s", out.fields[plain])
+	}
+
+	was := n.reads
+	draw(t, src, sized, &Scope{Count: 9})
+	if n.reads != was {
+		t.Error("a field known to be absent was asked about again")
+	}
+}
+
+// Knowing how many members a record has settles the ones nobody asked about.
+// Two queries that between them cover a record leave the next one -- for a
+// field neither named -- answered out of what is held.
+func TestTheTotalsSettleAFieldNobodyAskedAbout(t *testing.T) {
+	ownCache(t, 1<<20, 1<<20)
+	src, n := cached(t, twoWays)
+
+	// `twoWays` records carry three members: key, .name and .size. Ask for two
+	// of them, then the third.
+	draw(t, src, &Spec{Sort: []SortLevel{{Field: ".name"}},
+		Fields: Record{{Name: "key"}, {Name: ".name"}}}, &Scope{Count: 4})
+	draw(t, src, &Spec{Sort: []SortLevel{{Field: ".name"}},
+		Fields: Record{{Name: ".size"}}}, &Scope{Count: 4})
+	was := n.reads
+
+	// Three of three are known, so a fourth name has nothing left to be, and
+	// the whole record is answered without anyone being asked.
+	draw(t, src, &Spec{Sort: []SortLevel{{Field: ".name"}},
+		Fields: Record{{Name: ".mode"}}}, &Scope{Count: 4})
+	if n.reads != was {
+		t.Error("a name the totals had settled was asked about")
+	}
+	draw(t, src, byName(), &Scope{Count: 4})
+	if n.reads != was {
+		t.Error("a record its answers had covered was fetched entire")
+	}
+}
+
+// A query that says what it does NOT want is answered out of a record known
+// entire, and narrowed on the way out.
+func TestAnExcludingQueryIsAnsweredAndNarrowed(t *testing.T) {
+	ownCache(t, 1<<20, 1<<20)
+	src, n := cached(t, twoWays)
+
+	draw(t, src, byName(), &Scope{Count: 4}) // whole records, so entire
+	was := n.reads
+
+	out, _ := draw(t, src, &Spec{Sort: []SortLevel{{Field: ".name"}},
+		Exclude: Record{{Name: ".size"}}}, &Scope{Count: 4})
+	if n.reads != was {
+		t.Error("an excluding query over records known entire asked the source")
+	}
+	for i, f := range out.fields {
+		if f.Has(".size") {
+			t.Errorf("record %s came back carrying what was excluded: %s",
+				out.keys[i], f)
+		}
+		if !f.Has(".name") {
+			t.Errorf("record %s lost what was not excluded: %s", out.keys[i], f)
+		}
+		// Narrowed, so it is a SUBSET however entire the record behind it is --
+		// and it says how many members that record has, so that whoever takes
+		// it can tell what is missing from what is not there.
+		if out.whole[i] {
+			t.Errorf("record %s went out whole with a member taken out of it",
+				out.keys[i])
+		}
+		if out.has[i] != (Totals{Named: 3}) {
+			t.Errorf("record %s says it has %+v, and it has three named members",
+				out.keys[i], out.has[i])
+		}
+	}
+	// And the record is still held entire: narrowing happens on the way out
+	// rather than by throwing anything away, so the next query wanting the lot
+	// still has it.
+	if _, _, ok := hot.serve(setKeyOf(src, byName()), nil, &Scope{Count: 4}); !ok {
+		t.Error("an excluding query left the records narrowed in the cache")
+	}
+}
+
 // Letting a sequence go does not let go of what it taught: the records belong
 // to the source and the order to the sequence, and neither has gone anywhere.
 func TestClosingASequenceKeepsWhatItLearned(t *testing.T) {
@@ -416,7 +523,7 @@ func (namelessSet) Close() {}
 func (namelessSet) Read(sc *Scope, out Sink) error {
 	out.Ordered()
 	for _, id := range []*Value{NewInt(1), nil, NewInt(3)} {
-		if err := out.Subset(id, Record{Named(".name", "x")}); err != nil {
+		if err := out.Subset(id, Record{Named(".name", "x")}, Totals{Named: 2}); err != nil {
 			return err
 		}
 	}
@@ -511,7 +618,7 @@ func (s *reusingSet) Read(sc *Scope, out Sink) error {
 	out.Ordered()
 	for i, name := range []string{"first", "second"} {
 		s.src.bag[0] = Named(".name", name)
-		if err := out.Subset(NewInt(int64(i)), s.src.bag); err != nil {
+		if err := out.Subset(NewInt(int64(i)), s.src.bag, Totals{Named: 2}); err != nil {
 			return err
 		}
 	}

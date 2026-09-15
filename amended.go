@@ -409,12 +409,15 @@ func (m *merge) Ordered() {
 // Record and Subset take one of the child's records, entire or in part. Which
 // it was goes out unchanged: this source says of a record it passed on exactly
 // what the child said of it.
+// A whole record is its own totals: what it carries is everything there is. So
+// the count below is true and nothing on that path reads it -- emit sends a
+// whole record whole -- which is why changing it breaks no test.
 func (m *merge) Record(key *Value, fields Record) error {
-	return m.theirs(key, fields, true)
+	return m.theirs(key, fields, Tally(fields), true)
 }
 
-func (m *merge) Subset(key *Value, fields Record) error {
-	return m.theirs(key, fields, false)
+func (m *merge) Subset(key *Value, fields Record, has Totals) error {
+	return m.theirs(key, fields, has, false)
 }
 
 // theirs is one of the child's records reaching the merge.
@@ -422,7 +425,7 @@ func (m *merge) Subset(key *Value, fields Record) error {
 // A key this source amends is the source's to answer: the child's copy is
 // dropped, and ours goes out in its own place -- which is wherever the run of
 // ours reaches, not wherever the child's copy turned up.
-func (m *merge) theirs(key *Value, fields Record, whole bool) error {
+func (m *merge) theirs(key *Value, fields Record, has Totals, whole bool) error {
 	// The child gave it, so this is where the child now stands -- whether or
 	// not it is passed on, and that is what the next scope resumes it from.
 	m.childAt = key
@@ -455,7 +458,7 @@ func (m *merge) theirs(key *Value, fields Record, whole bool) error {
 	if m.full() {
 		return nil
 	}
-	return m.emit(key, fields, whole)
+	return m.emit(key, fields, has, whole)
 }
 
 // drop marks one of ours as not going out after all.
@@ -560,13 +563,13 @@ func (m *merge) flushBefore(at []*Value) {
 		}
 		// A replacement is the record entire -- that is what Replace states --
 		// and so is an addition. Both go out as one.
-		if m.emit(am.key, am.fields, true) != nil {
+		if m.emit(am.key, am.fields, Tally(am.fields), true) != nil {
 			return
 		}
 	}
 }
 
-func (m *merge) emit(key *Value, fields Record, whole bool) error {
+func (m *merge) emit(key *Value, fields Record, has Totals, whole bool) error {
 	m.sent++
 	m.last = key
 	// Noted as it goes, because the next scope will name it as `after`: where
@@ -578,7 +581,7 @@ func (m *merge) emit(key *Value, fields Record, whole bool) error {
 	if whole {
 		return m.out.Record(key, fields)
 	}
-	return m.out.Subset(key, fields)
+	return m.out.Subset(key, fields, has)
 }
 
 // amendTuple and recordTuple place a record: the value at each sort level, and

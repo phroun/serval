@@ -60,6 +60,14 @@ It's a sibling to the rest of the line: **Mew** (text editor), **PurfecTerm**
   is asked against. So a second sort costs places and not fields, and a stretch
   already fetched for one field is topped up with another rather than fetched
   again.
+- **A record says how many members it has.** Every subset carries two counts —
+  how many members stand by position, how many by name — so a later question
+  can be answered without asking. Three of the first means `0`, `1` and `2` and
+  nothing else; eight of the second, eight of which are known, leaves nothing
+  for a ninth name to be. A field a record has *not* got comes back as
+  `undefined` rather than being left out, which is a guarantee instead of a
+  silence. Subsets that between them cover a record leave it known *entire*,
+  without anyone deciding to.
 - **Identity is not a spelling.** `Key` and `Equal` decide whether two values
   are the same value, and they owe nothing to any grammar: text and bytes are
   different kinds, 3 and 3.0 are different numbers, and floats compare by their
@@ -91,7 +99,8 @@ A sink takes the records one at a time and is told what ended them:
 type Sink interface {
     Ordered()                                  // before the first record, or not at all
     Record(id *serval.Value, f serval.Record) error  // the record entire
-    Subset(id *serval.Value, f serval.Record) error  // only what was asked for
+    Subset(id *serval.Value, f serval.Record,        // only what was asked for,
+           has serval.Totals) error                  // out of this many members
     Done(c serval.Complete)
 }
 ```

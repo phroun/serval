@@ -360,14 +360,14 @@ type stopAfterOne struct {
 func (s *stopAfterOne) Ordered() { s.out.Ordered() }
 
 func (s *stopAfterOne) Record(k *Value, f Record) error {
-	return s.keep(k, f, true)
+	return s.keep(k, f, Tally(f), true)
 }
 
-func (s *stopAfterOne) Subset(k *Value, f Record) error {
-	return s.keep(k, f, false)
+func (s *stopAfterOne) Subset(k *Value, f Record, has Totals) error {
+	return s.keep(k, f, has, false)
 }
 
-func (s *stopAfterOne) keep(k *Value, f Record, whole bool) error {
+func (s *stopAfterOne) keep(k *Value, f Record, has Totals, whole bool) error {
 	if s.sent > 0 {
 		return nil
 	}
@@ -376,7 +376,7 @@ func (s *stopAfterOne) keep(k *Value, f Record, whole bool) error {
 	if whole {
 		return s.out.Record(k, f)
 	}
-	return s.out.Subset(k, f)
+	return s.out.Subset(k, f, has)
 }
 
 // Done says where it got to: the one record it sent, which is the only one it

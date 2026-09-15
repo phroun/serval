@@ -35,12 +35,17 @@ package serval
 // known well enough for the fields the query asked for. Both are settled in
 // cache.go.
 //
-// A query that names no fields is asking for whole records, so only records
-// that arrived whole can answer it -- which means a query that says only what
-// it does NOT want (`exclude` with no `fields`) can be filed but never served,
-// there being no way yet to tell a subset that happens to hold everything from
-// one that does not. Per-record field totals are what will close that, and are
-// not built.
+// A query that names FIELDS is answered wherever every one of them is settled:
+// carried, carried as an absence, or settled by the record's totals. A query
+// that names none is asking for whole records, and is answered only by records
+// known entire -- which a run of subsets that between them cover a record makes
+// it, so this is far from the rare case it sounds.
+//
+// A query that says what it does NOT want is answered the same way and then
+// narrowed here, the excluded members being dropped on the way out. It cannot
+// be answered out of a record known only in part: what such a query wants is
+// everything else, and how much else there is is exactly what a record known in
+// part does not say.
 
 import (
 	"fmt"
@@ -137,11 +142,22 @@ func (s *cachedSet) Read(sc *Scope, out Sink) error {
 		// Said before the records, which is where it can be acted on.
 		out.Ordered()
 		for _, r := range recs {
-			send := out.Subset
-			if r.whole {
-				send = out.Record
+			fields := r.fields
+			entire := r.entire()
+			if entire && len(s.spec.Exclude) > 0 {
+				// What this query does not want comes off here rather than
+				// being held twice: the cache keeps the record, and each
+				// sequence over it takes what it asked for.
+				fields = without(fields, s.spec.Exclude)
+				entire = false
 			}
-			if err := send(r.id, r.fields); err != nil {
+			var err error
+			if entire {
+				err = out.Record(r.id, fields)
+			} else {
+				err = out.Subset(r.id, fields, r.has)
+			}
+			if err != nil {
 				return err
 			}
 		}
@@ -183,13 +199,14 @@ type filing struct {
 func (f *filing) Ordered() { f.out.Ordered() }
 
 func (f *filing) Record(id *Value, fields Record) error {
-	f.take(id, fields, true)
+	// A whole record IS its own totals: what it carries is everything there is.
+	f.take(id, fields, Tally(fields))
 	return f.out.Record(id, fields)
 }
 
-func (f *filing) Subset(id *Value, fields Record) error {
-	f.take(id, fields, false)
-	return f.out.Subset(id, fields)
+func (f *filing) Subset(id *Value, fields Record, has Totals) error {
+	f.take(id, fields, has)
+	return f.out.Subset(id, fields, has)
 }
 
 // take keeps one record, in a copy of the run the source handed over.
@@ -198,13 +215,13 @@ func (f *filing) Subset(id *Value, fields Record) error {
 // as long as it holds it, and a source that reuses its own slice between
 // records would otherwise rewrite what is filed. The fields inside are shared,
 // values being read-only everywhere here.
-func (f *filing) take(id *Value, fields Record, whole bool) {
+func (f *filing) take(id *Value, fields Record, has Totals) {
 	if id == nil {
 		f.unplaceable = true
 		return
 	}
 	f.kept = append(f.kept,
-		newRecord("", id, append(Record(nil), fields...), whole, 0))
+		newRecord("", id, append(Record(nil), fields...), has, 0))
 	for len(f.kept) > f.most {
 		// The run now starts past the record that just went, which for a walk
 		// read backwards is the record it now stops before: one end either way,
@@ -229,4 +246,16 @@ func (f *filing) Done(c Complete) {
 	}
 	hot.hold(f.set.ds, sc, f.kept, c)
 	f.out.Done(c)
+}
+
+// without drops the members a query said it did not want. The record it is
+// taken out of is the cache's and is left as it was.
+func without(fields, excluded Record) Record {
+	out := make(Record, 0, len(fields))
+	for _, f := range fields {
+		if !excluded.Has(f.Name) {
+			out = append(out, f)
+		}
+	}
+	return out
 }

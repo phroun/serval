@@ -67,6 +67,78 @@ func (r Record) Names() []string {
 	return out
 }
 
+// --- how many members a record has ---------------------------------------
+
+// Totals is how many members a record has, whether or not they were sent.
+//
+// Two counts and not one, because they settle different questions. ORDERED
+// members are named by their position, so their count settles them entirely: n
+// of them are the members `0` through `n-1`, and a query naming an index past
+// that is answered without anyone being asked. NAMED members need the count AND
+// the names -- knowing there are three says nothing about which three -- but the
+// count still settles the question the moment three are known, there being
+// nothing left for a fourth name to be.
+//
+// **An absence does not count.** A member sent as undefined is a name the
+// record has NOT got, said out loud so that nobody asks again. That is
+// knowledge about the record rather than a member of it, and counting it would
+// say the record had a member it has not.
+type Totals struct {
+	Ordered int
+	Named   int
+}
+
+// MemberIndex reads a field name as an ordered member's index.
+//
+// An ordered member is named by its position written out -- `0`, `1`, `2`, or
+// `.0`, `.1`, `.2` where the source marks its members with a leading dot -- and
+// only in that spelling: no sign, and no leading zeros but `0` itself. So `007`
+// is a NAME that happens to be digits rather than the member at seven, which is
+// the same distinction everything else here makes between a name and a number.
+//
+// **This is the rule, and a source counting its members has to count by it.**
+// Totals that said a record had no ordered members while naming one `.0` would
+// have this answer "index 0 is not there" about a member that is, which is the
+// one way a total can be worse than no total at all. Tally counts by this rule
+// and is what a source should use.
+func MemberIndex(name string) (int, bool) {
+	if name != "" && name[0] == '.' {
+		name = name[1:]
+	}
+	if name == "" || (len(name) > 1 && name[0] == '0') {
+		return 0, false
+	}
+	n := 0
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		n = n*10 + int(c-'0')
+		if n > 1<<40 {
+			return 0, false // past any record anyone has, and past overflowing
+		}
+	}
+	return n, true
+}
+
+// Tally counts what a record carries: how many members stand by position and
+// how many by name. Absences are not counted -- see Totals.
+func Tally(r Record) Totals {
+	var t Totals
+	for _, f := range r {
+		if f.Value == nil {
+			continue
+		}
+		if _, ok := MemberIndex(f.Name); ok {
+			t.Ordered++
+		} else {
+			t.Named++
+		}
+	}
+	return t
+}
+
 // String is the record as readable text: each member's name, then its value,
 // and nothing at all for a member that has no value under its name. See
 // Value.String -- readable, never parsed back, and nothing turns on it.

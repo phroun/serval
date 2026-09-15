@@ -232,8 +232,10 @@ type unordered struct{ out Sink }
 
 func (u *unordered) Ordered()                        {} // said nothing, which is what a jumble says
 func (u *unordered) Record(k *Value, f Record) error { return u.out.Record(k, f) }
-func (u *unordered) Subset(k *Value, f Record) error { return u.out.Subset(k, f) }
-func (u *unordered) Done(c Complete)                 { u.out.Done(c) }
+func (u *unordered) Subset(k *Value, f Record, has Totals) error {
+	return u.out.Subset(k, f, has)
+}
+func (u *unordered) Done(c Complete) { u.out.Done(c) }
 
 type errBroken struct{}
 

@@ -516,12 +516,14 @@ func (v *pslDataSet) Read(s *Scope, out Sink) error {
 			break
 		}
 		rec := v.src.recs[o.rows[i]]
-		bag, whole := v.fields(rec)
-		send := out.Subset
+		bag, has, whole := v.fields(rec)
+		var err error
 		if whole {
-			send = out.Record
+			err = out.Record(rec.key, bag)
+		} else {
+			err = out.Subset(rec.key, bag, has)
 		}
-		if err := send(rec.key, bag); err != nil {
+		if err != nil {
 			return err
 		}
 		last = rec.key
@@ -539,36 +541,40 @@ func (v *pslDataSet) Read(s *Scope, out Sink) error {
 	return nil
 }
 
-// fields is what one record carries in this scope -- the fields the scope
-// asked for where it named fewer than the query did, the query's own where it
-// did not, and everything the record has where neither named any -- and whether
-// that is the whole of the record.
+// fields is what one record carries in this scope, how many members the record
+// HAS altogether, and whether what goes out is the whole of it.
 //
 // Whole is the stronger claim and it is only made where it is true: a list of
 // fields was asked for, or an exclusion took something out, and what goes out
 // is a subset. Narrowing to a list that happens to name everything is still
-// answered as a subset, which is the weaker claim and therefore always safe.
+// answered as a subset, which is the weaker claim and therefore always safe --
+// and the totals beside it say so exactly, which is what lets the far end work
+// out for itself that it now holds the lot.
 //
-// A field the record has not got is left out rather than sent as `undefined`,
-// which is the same answer in fewer bytes: an absent field reads as undefined
-// at the far end.
-func (v *pslDataSet) fields(rec pslRecord) (Record, bool) {
+// **A field the record has not got goes out as undefined** rather than being
+// left out. Left out it reads as a field nobody asked about, and the next query
+// naming it asks all over again; sent, it is a guarantee that the record has
+// not got it. This source holds its records entire, so it always knows which of
+// the two it is looking at.
+func (v *pslDataSet) fields(rec pslRecord) (Record, Totals, bool) {
+	bag := rec.fields()
+	has := Tally(bag)
+
 	want := v.spec.Fields
 	if len(want) == 0 {
-		bag := rec.fields()
 		out := v.without(bag)
-		return out, len(out) == len(bag)
+		return out, has, len(out) == len(bag)
 	}
 	out := make(Record, 0, len(want))
 	for _, a := range want {
 		if v.spec.Exclude.Has(a.Name) {
 			continue
 		}
-		if val := rec.Field(a.Name); val != nil {
-			out = append(out, &Field{Name: a.Name, Value: val})
-		}
+		// Present with its value, or present with nothing under it, which says
+		// the record has not got it and is an answer rather than a silence.
+		out = append(out, &Field{Name: a.Name, Value: rec.Field(a.Name)})
 	}
-	return out, false
+	return out, has, false
 }
 
 // without drops the fields the query said it did not want.

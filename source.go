@@ -73,20 +73,30 @@ type Sink interface {
 	// Whole is worth saying because it outlives the scope that asked for it.
 	// A record that arrived entire answers any question about that record, so
 	// whoever holds it can answer the next query out of it instead of asking
-	// again.
+	// again. It states no totals because it IS the totals: what it carries is
+	// everything there is.
 	//
 	// The identity is beside the fields, not among them. A record may well
 	// carry a field called `key`, and that field is data: it sorts, it
 	// filters, it fills a column. What names the record is this.
 	Record(id *Value, fields Record) error
 
-	// Subset takes some of a record: its identity, and the fields that were
-	// asked for, which are fewer than the record has.
+	// Subset takes some of a record: its identity, the fields that were asked
+	// for, and how many members the record HAS ALTOGETHER.
 	//
-	// It answers the question that asked for it and no other. A later question
-	// naming a field this one left out is not answered by what came back here,
-	// however many of the same records it names.
-	Subset(id *Value, fields Record) error
+	// The totals are what let a later question be answered without asking
+	// again. Knowing a record has eight named members and holding eight of them
+	// settles every other name at once -- there is nothing left for one to be --
+	// and knowing it has three ordered ones settles `3` and everything past it,
+	// an ordered member being named by its position. Without them a subset
+	// answers the question that asked for it and no other.
+	//
+	// **A field the record has not got is sent as undefined**, rather than left
+	// out. Left out it reads as a field nobody asked about; sent, it is a
+	// guarantee that the record has not got it, and it is never asked for
+	// again. It is not counted in the totals, being knowledge about the record
+	// and not a member of it.
+	Subset(id *Value, fields Record, has Totals) error
 
 	Done(c Complete)
 }

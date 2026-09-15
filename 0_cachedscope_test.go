@@ -6,12 +6,11 @@ import (
 	"testing"
 )
 
-// whole is one record as a source sending everything would hand it back.
+// whole is one record as a source sending everything would hand it back: two
+// named members, and the totals saying that is all of them.
 func whole(id int64) *cachedRecord {
-	return newRecord("files", NewInt(id), Record{
-		Named("name", fmt.Sprintf("file-%d", id)),
-		Named("size", id*10),
-	}, true, 0)
+	f := Record{Named(".name", fmt.Sprintf("file-%d", id)), Named(".size", id*10)}
+	return newRecord("files", NewInt(id), f, Tally(f), 0)
 }
 
 // ent is one place in a run, which is an identity and two links. What the

@@ -652,6 +652,7 @@ type waiting struct {
 	child  *Value // as the include that gave it does
 	tuple  []*Value
 	fields Record
+	has    Totals // how many members the record has, as the include said
 	whole  bool
 }
 
@@ -666,11 +667,11 @@ func (g *gathering) lane(i int) Sink { return &lane{g: g, i: i} }
 func (l *lane) Ordered() { l.g.declared(l.i) }
 
 func (l *lane) Record(key *Value, fields Record) error {
-	return l.g.take(l.i, key, fields, true)
+	return l.g.take(l.i, key, fields, Tally(fields), true)
 }
 
-func (l *lane) Subset(key *Value, fields Record) error {
-	return l.g.take(l.i, key, fields, false)
+func (l *lane) Subset(key *Value, fields Record, has Totals) error {
+	return l.g.take(l.i, key, fields, has, false)
 }
 
 func (l *lane) Done(c Complete) { l.g.finished(l.i, c) }
@@ -690,7 +691,7 @@ func (g *gathering) declared(i int) {
 }
 
 // take is one record arriving from an include.
-func (g *gathering) take(i int, key *Value, fields Record, whole bool) error {
+func (g *gathering) take(i int, key *Value, fields Record, has Totals, whole bool) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	a := g.at[i]
@@ -701,6 +702,7 @@ func (g *gathering) take(i int, key *Value, fields Record, whole bool) error {
 		child:  key,
 		tuple:  g.place(a.name, key, fields),
 		fields: fields,
+		has:    has,
 		whole:  whole,
 	}
 	a.tail, a.tailAt, a.tailNamed = key, rec.tuple, rec.key
@@ -859,7 +861,7 @@ func (g *gathering) hand(from int, rec waiting) {
 		_ = g.out.Record(rec.key, rec.fields)
 		return
 	}
-	_ = g.out.Subset(rec.key, rec.fields)
+	_ = g.out.Subset(rec.key, rec.fields, rec.has)
 }
 
 // allSaidOrdered reports whether every include declared its records in order.

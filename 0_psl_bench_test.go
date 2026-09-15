@@ -66,7 +66,7 @@ func (c *counter) Record(key *Value, fields Record) error {
 	return nil
 }
 
-func (c *counter) Subset(key *Value, fields Record) error {
+func (c *counter) Subset(key *Value, fields Record, has Totals) error {
 	return c.Record(key, fields)
 }
 
