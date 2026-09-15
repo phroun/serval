@@ -31,11 +31,11 @@ package serval
 //
 // # What is here and what is not
 //
-// The roles and the extents are here. What is NOT here, and is the protocol's
-// half rather than this library's: handles with stable ids across revisions,
-// coalescing two extents that nearly meet, splitting one region into a visible
-// chunk and a bulk chunk, the count as a standing concern, individually pinned
-// keys, and invalidation itself.
+// The roles and the extents are here, and what a notice against them costs is
+// in invalidate.go. What is NOT here, and is the protocol's half rather than
+// this library's: handles with stable ids across revisions, coalescing two
+// extents that nearly meet, splitting one region into a visible chunk and a
+// bulk chunk, the count as a standing concern, and individually pinned keys.
 //
 // Nor is the FLESH covered by an extent. An extent says which stretch of an
 // ORDER is depended on, which is what membership, positions and the count are

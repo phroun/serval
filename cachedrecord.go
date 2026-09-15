@@ -38,10 +38,12 @@ package serval
 // # Knowledge only grows
 //
 // A second answer about a record already known is ADDED to what is known rather
-// than put in its place. A field already here keeps the value it has, because
-// nothing yet decides that a held value is stale and the answer already filed
-// is as good as the one that just arrived; a field this answer brought and the
-// last one did not is new knowledge, and is kept.
+// than put in its place. A field already here keeps the value it has, because a
+// value that has stopped being true is FORGOTTEN rather than replaced -- see
+// invalidate.go -- so a field still standing is one nothing has been said
+// against, and the answer already filed is as good as the one that just
+// arrived; a field this answer brought and the last one did not is new
+// knowledge, and is kept.
 //
 // Which is what makes a top-up possible: a query wanting one field more than is
 // known can ask for that field alone, over the records a run already places,
@@ -92,10 +94,11 @@ type cachedRecord struct {
 
 	// gen is the generation of the source this was fetched at.
 	//
-	// Nothing reads it yet. It is what invalidation will compare against to
-	// know whether what is known predates a change, and it is here from the
-	// start because adding it afterwards leaves every record already held with
-	// a generation nobody can work out.
+	// Nothing reads it. A notice forgets what it names rather than comparing
+	// ages, so it is not on that path: this is for the question a notice cannot
+	// answer, which is whether what is held predates a change nobody was told
+	// about. It is here from the start because adding it afterwards leaves
+	// every record already held with a generation nobody can work out.
 	gen uint64
 
 	// hit is the tick this record was last handed to somebody, and zero for one
@@ -175,8 +178,8 @@ func (r *cachedRecord) answers(wanted Record) bool {
 //
 // Nothing already known is overwritten, an absence included: a name already
 // filed as not there keeps that answer, two answers about one record of one
-// source not contradicting each other while nothing decides a held value is
-// stale. A record already known entire learns nothing, there being nothing left
+// source not contradicting each other, and whatever has stopped being true
+// having been forgotten before this arrived. A record already known entire learns nothing, there being nothing left
 // to learn.
 func (r *cachedRecord) learn(fields Record, has Totals, gen uint64) int {
 	if r.entire() {
@@ -317,6 +320,83 @@ func (rc *recordCache) drop(r *cachedRecord) {
 	if r.warm {
 		rc.warm -= r.cost
 	}
+}
+
+// --- letting go of part of it ---------------------------------------------
+
+// unlearn forgets what a record was holding under these names.
+//
+// Which is all an alteration costs the values: the names that MAY have changed
+// stop being answered, and everything else about the record is as true as it
+// was. A name held as an ABSENCE goes the same way -- "it has not got one" is an
+// answer about that name, and an answer about that name is what is no longer
+// trusted.
+//
+// Naming NO fields names every one of them: a source that says a record altered
+// and cannot say where has said nothing about it is left to trust.
+//
+// # Where the totals settle it, the record goes
+//
+// A record answers about a name it does not carry wherever its own counts settle
+// it -- three ordered members are `0`, `1` and `2` and nothing else, and eight
+// named members with eight known leave nothing for a ninth name to be. If a name
+// that may have changed is still settled that way once what was carried has
+// gone, the answer left standing is "it has not got one", and whether it has got
+// one is exactly what may have changed.
+//
+// The counts are what is wrong then, and they cannot be narrowed without being
+// invented -- a total is the source's statement and is handed on to whoever asks
+// -- so the record is dropped instead. Its place in every order is untouched,
+// which is the ordinary asymmetry here.
+func (rc *recordCache) unlearn(r *cachedRecord, fields []string) {
+	if len(fields) == 0 {
+		rc.drop(r)
+		return
+	}
+	was := r.cost
+	r.fields = lacking(r.fields, fields)
+	r.knows = Tally(r.fields)
+	for _, name := range fields {
+		if r.absent(name) {
+			rc.drop(r) // its cost is still the one the books were charged
+			return
+		}
+	}
+	r.cost = costOfFields(r.fields)
+	rc.cost += r.cost - was
+	if r.warm {
+		rc.warm += r.cost - was
+	}
+}
+
+// lacking is a record without the members these names call, absences included.
+func lacking(r Record, names []string) Record {
+	out := make(Record, 0, len(r))
+	for _, f := range r {
+		keep := true
+		for _, n := range names {
+			if f.Name == n {
+				keep = false
+				break
+			}
+		}
+		if keep {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// everything is every record held of one source, taken before anything drops
+// them -- which is what a notice too vague to name records costs.
+func (rc *recordCache) everything(src string) []*cachedRecord {
+	out := make([]*cachedRecord, 0, len(rc.at))
+	for _, r := range rc.at {
+		if r.src == src {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // setLimit fixes how much the cache holds, evicting down to it at once.

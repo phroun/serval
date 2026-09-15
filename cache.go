@@ -79,17 +79,20 @@ package serval
 // rather than what is held) is the stronger answer, and is what to reach for if
 // measurement says these two are not enough. It is deliberately not here yet.
 //
-// # What is not here
+// # What decides that something held is wrong
 //
-// Invalidation. Records carry a generation for it and runs can already be split
-// and rejoined without re-querying, which is the machinery it will need, but
-// nothing yet decides that a held record is stale.
+// Nothing here does. A source SAYS so, and invalidate.go is what saying so
+// costs: the values forgotten for the source, the order forgotten per sequence,
+// or neither. Nothing is polled, nothing expires and no generation is compared
+// -- a cache nobody tells holds what it holds, which is right for a source that
+// does not change and is the source's problem for one that does.
 //
-// While that is true, the cache refuses to hold an answer whose records already
-// stand somewhere in this sequence: with no way to tell which ORDER is right,
-// the one already filed is kept and the new answer is not placed a second time.
-// What those records HOLD is not refused the same way -- knowledge only grows,
-// and a second answer about a record already known adds to it.
+// Which is also why the cache refuses to hold an answer whose records already
+// stand somewhere in this sequence. Two answers putting one record in two
+// places are two orders, and nothing here can tell which of them is right; the
+// one already filed is kept, and whoever knows the order changed says so. What
+// those records HOLD is not refused the same way -- knowledge only grows, and a
+// second answer about a record already known adds to it.
 
 import (
 	"sync"
@@ -386,9 +389,9 @@ func (c *cache) hold(ds dataSet, sc *Scope, recs []*cachedRecord, done Complete)
 	defer c.mu.Unlock()
 
 	// The values first, and unconditionally. Two answers about one record of
-	// one source do not contradict each other while nothing decides a held
-	// value is stale, so what this one knows is added to what is known however
-	// the placement below goes.
+	// one source do not contradict each other -- what has stopped being true is
+	// forgotten rather than replaced -- so what this one knows is added to what
+	// is known however the placement below goes.
 	for _, r := range recs {
 		c.flesh.learn(ds.source, r)
 	}
