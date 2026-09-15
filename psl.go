@@ -11,8 +11,10 @@ package serval
 //
 // This is a flat reading. A `_bundle` member is a record like any other, and
 // nothing here follows an include, applies an amendment or resolves a hash --
-// that is a layer above this one, and it is built on this rather than into it
-// (docs/data-sources-and-bundles.md).
+// that is a layer above this one, and it is built on this rather than into it.
+// That layer is designed and unbuilt; the design is KittyTK's
+// docs/data-sources-and-bundles.md, and where it comes to live is a question
+// for whoever builds it.
 //
 // What it is for is access: a scope of a sorted, filtered sequence, found
 // without walking the records that precede it. The sequence is ordered once per
