@@ -373,3 +373,63 @@ func TestAnExactFigureStandsOverAHigherFloor(t *testing.T) {
 		t.Errorf("an exact figure below the floor came back as %s", got)
 	}
 }
+
+// A source may volunteer the figure on an answer it was sending anyway, rather
+// than waiting to be asked -- and a wrapper files it, so nobody asks again.
+func TestASourceMayVolunteerTheFigureWithAnAnswer(t *testing.T) {
+	ownCache(t, 1<<20, 1<<20)
+	// It will not answer the question, but it says the figure as it goes.
+	src := NewCachedSource(&telling{child: mustPSL(t, many(20)), total: Exactly(20)})
+
+	draw(t, src, byName(), &Scope{Count: 3})
+
+	if got := counted(t, src, byName()); got != "20" {
+		t.Errorf("after an answer that stated it, it counted %s", got)
+	}
+	// And it is the membership's, so the other order has it too.
+	if got := counted(t, src, bySize()); got != "20" {
+		t.Errorf("the other order counted %s", got)
+	}
+}
+
+// telling is a source that will not be asked how many records there are, and
+// says so on the way past instead.
+type telling struct {
+	child Source
+	total RecordCount
+}
+
+func (m *telling) Open(spec *Spec) (DataSet, error) {
+	v, err := m.child.Open(spec)
+	if err != nil {
+		return nil, err
+	}
+	return &tellingSet{src: m, child: v}, nil
+}
+
+type tellingSet struct {
+	src   *telling
+	child DataSet
+}
+
+func (s *tellingSet) Close() { s.child.Close() }
+
+func (s *tellingSet) Read(sc *Scope, out Sink) error {
+	return s.child.Read(sc, &tellingSink{src: s.src, out: out})
+}
+
+type tellingSink struct {
+	src *telling
+	out Sink
+}
+
+func (k *tellingSink) Ordered()                         { k.out.Ordered() }
+func (k *tellingSink) Record(id *Value, f Record) error { return k.out.Record(id, f) }
+func (k *tellingSink) Subset(id *Value, f Record, h Totals) error {
+	return k.out.Subset(id, f, h)
+}
+
+func (k *tellingSink) Done(c Complete) {
+	c.Total = k.src.total
+	k.out.Done(c)
+}

@@ -179,6 +179,17 @@ type Complete struct {
 	Watermark *Value
 	Stop      Stop
 
+	// Total is how many records the whole SEQUENCE has, where the source knows
+	// and volunteers it.
+	//
+	// Optional. A source that cannot count cheaply says nothing, which is
+	// Unknown; one that can says it on an answer it was sending anyway rather
+	// than waiting to be asked. It is a fact about the ORDER, which is why it
+	// rides here beside the watermark and the ending word -- and about the
+	// sequence rather than this scope of it, how many came back being something
+	// whoever asked can count.
+	Total RecordCount
+
 	// Error is a refusal, which is an answer: this scope cannot be produced,
 	// the records are gone, whatever held them is no longer reachable.
 	// Whoever asked carries on with what it has.

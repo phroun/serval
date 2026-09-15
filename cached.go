@@ -402,6 +402,13 @@ func (f *filing) take(id *Value, fields Record, has Totals) {
 // Done files the run and then says so, in that order: a sink told an answer has
 // ended may ask for the next one at once, and it should find this one here.
 func (f *filing) Done(c Complete) {
+	// What the source volunteered about how many there are, whatever became of
+	// the placement below. A count is about the sequence rather than this scope
+	// of it, so it is worth keeping even where the answer itself is refused --
+	// a source that could not produce this stretch may still know the figure.
+	if !c.Total.Nothing() {
+		hot.learnCount(f.set.ds, c.Total)
+	}
 	if f.unplaceable {
 		f.out.Done(c)
 		return
