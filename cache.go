@@ -133,6 +133,12 @@ var hot = newCache(defaultCacheLimit)
 type dataSet struct {
 	source string // whose records these are
 	set    string // which sequence of them: source, sort and filter together
+
+	// members is which records are in it AT ALL -- the source and the filter,
+	// with no sort. How many there are is a fact about membership rather than
+	// about order, so it is keyed here and survives a re-sort: click a column
+	// header and the order is new while the count is the one already known.
+	members string
 }
 
 type cache struct {
@@ -156,6 +162,11 @@ type cache struct {
 	// not, and a run never overlaps another of the same sequence.
 	at map[string]*entry
 
+	// counts is how many records each MEMBERSHIP has, by the key above. Not
+	// per sequence: two sorts over one source and one filter are two orders of
+	// one set of records, and there are as many of them either way.
+	counts map[string]RecordCount
+
 	// flesh is what those records hold, which is a cache of its own with its
 	// own room and its own eviction. Nothing here points into it and nothing
 	// there points back: a place holds an identity, and what is known about
@@ -171,10 +182,11 @@ func newCache(limit int) *cache {
 		limit: limit * boneShare / boneOf,
 		next:  1, // zero names no run, so a half-built one cannot be mistaken for one
 
-		runs:  map[cachedScopeID]*cachedScope{},
-		sets:  map[string][]*cachedScope{},
-		at:    map[string]*entry{},
-		flesh: newRecordCache(limit - limit*boneShare/boneOf),
+		runs:   map[cachedScopeID]*cachedScope{},
+		sets:   map[string][]*cachedScope{},
+		at:     map[string]*entry{},
+		counts: map[string]RecordCount{},
+		flesh:  newRecordCache(limit - limit*boneShare/boneOf),
 	}
 }
 
@@ -515,6 +527,60 @@ func (s *cachedScope) all() []*entry {
 		out = append(out, e)
 	}
 	return out
+}
+
+// --- how many there are --------------------------------------------------
+
+// recordCount is the best thing this cache can say about how many records a
+// sequence has.
+//
+// Two things it can draw on, and it takes whichever says more. What a source
+// STATED is held by membership, so a second sort over the same filter finds it
+// already there. What is HELD is a floor for nothing: the records of one
+// sequence's runs are distinct records of that sequence, so however many of them
+// there are, there are at least that many -- and a run reaching from the
+// sequence's own beginning to its own end is not a floor at all but the whole
+// figure, which is the minimal source's answer arriving for free.
+//
+// Runs of ONE sequence, never of two. Two orders over one filter hold the same
+// records twice, so adding their lengths would count some of them twice and a
+// floor that is too high is the one kind that is not safe.
+func (c *cache) recordCount(ds dataSet) RecordCount {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	held := 0
+	for _, s := range c.sets[ds.set] {
+		if s.begin == nil && s.end == nil {
+			return Exactly(s.n) // the whole sequence, in one run
+		}
+		held += s.n
+	}
+	if stated := c.counts[ds.members]; stated.Exact || stated.N >= held {
+		return stated
+	}
+	return AtLeast(held)
+}
+
+// learnCount files what a source said, where that says more than is held.
+//
+// An exact figure always stands, the newer of two exact ones included: a source
+// counting a sequence it has just read is better placed than one counting it
+// last time, and neither is guessing. Between two floors the higher wins, a
+// floor being a claim that there are at least this many.
+func (c *cache) learnCount(ds dataSet, n RecordCount) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if says(n, c.counts[ds.members]) {
+		c.counts[ds.members] = n
+	}
+}
+
+func says(a, b RecordCount) bool {
+	if a.Exact || b.Exact {
+		return a.Exact
+	}
+	return a.N > b.N
 }
 
 // --- making room ---------------------------------------------------------

@@ -455,6 +455,17 @@ type pslDataSet struct {
 // something newer pushes it out, because the records it orders have not moved.
 func (v *pslDataSet) Close() { v.ord = nil }
 
+// RecordCount is exact and costs nothing. The sequence was ordered when it was
+// opened, so the records that passed the filter are already in a slice and how
+// many there are is its length. A source that has to fetch its records pays for
+// this figure; one that holds them has it whether or not anyone asks.
+func (v *pslDataSet) RecordCount() RecordCount {
+	if v.ord == nil {
+		return Unknown() // closed, and its ordering let go of
+	}
+	return Exactly(v.ord.Len())
+}
+
 // Read produces one scope.
 //
 // Where it starts is a map lookup: the ordering knows where every record of the

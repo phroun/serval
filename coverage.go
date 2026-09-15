@@ -164,6 +164,23 @@ func (r Roles) decides(name string) bool {
 	return false
 }
 
+// Filters reports whether a change to this field could take a record OUT of the
+// sequence, or bring one in.
+//
+// Narrower than Decides, and the difference is exactly the sort. A sort field
+// changing moves a record to another place in the sequence; it cannot make there
+// be more or fewer of them. So this is the question the COUNT asks, where
+// Decides is the one the order asks, and a sequence sorted by `.size` and
+// filtered by `.kind` answers them differently about each.
+func (r Roles) Filters(name string) bool {
+	for _, n := range r.Filter {
+		if n == name {
+			return true
+		}
+	}
+	return false
+}
+
 // Shows reports whether this sequence carries the field without being decided
 // by it -- so a change to it repaints those records and moves nothing.
 //

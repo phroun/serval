@@ -50,6 +50,24 @@ package serval
 // that lies is worse than a run that is gone. Over-invalidating is always safe
 // and under-invalidating never is, so that is the direction to be wrong in.
 //
+// # And how many there are
+//
+// A notice moves the COUNT as well, and moves it once for every sort over that
+// filter: how many records there are is a fact about membership, and sorting
+// cannot make there be more or fewer of them. Added is one more, Removed is one
+// fewer, and anything that leaves membership in doubt -- Replaced, or Altered
+// naming a field the FILTER tests -- lowers the floor and gives up the
+// exactness rather than throwing the figure away.
+//
+// Which is the finer of the two questions a field is asked. `Decides` is the
+// ORDER's: could a change to this move a record, or take it out? `Filters` is
+// the COUNT's: could it take one out? A sort field answers the first and not
+// the second, because moving a record somewhere else in a sequence leaves just
+// as many records in it.
+//
+// And it is why counting needs no deltas of its own. The statement that would
+// have carried a delta is the notice, and the notice was being sent anyway.
+//
 // # A stretch that cannot be walked
 //
 // One record is always answered exactly, and so is a stretch this cache holds
@@ -132,7 +150,11 @@ func (c *CachedSource) Stale(spec *Spec, n Notice) {
 	var ds dataSet
 	var roles Roles
 	if spec != nil {
-		ds = dataSet{source: c.key, set: c.key + "\x00" + dataSetKey(spec)}
+		ds = dataSet{
+			source:  c.key,
+			set:     c.key + "\x00" + dataSetKey(spec),
+			members: c.key + "\x00" + FilterKey(spec.Filter),
+		}
 		roles = spec.Roles()
 	} else {
 		ds = dataSet{source: c.key}
@@ -162,13 +184,71 @@ func (c *cache) stale(ds dataSet, roles Roles, n Notice) {
 	}
 
 	if ds.set == "" {
-		// A notice about records, with no sequence to answer it against.
-		// Nothing below would find anything keyed to no sequence anyway, so
-		// this says what is meant rather than stopping anything -- which is why
-		// no test kills it.
+		// A notice about records, with no sequence to answer it against --
+		// which is also why it moves no COUNT. It names no filter, so it says
+		// nothing about whether the record it names was ever a member of
+		// anything, and guessing either way would be a figure nobody could
+		// check. A source that changes what is IN a sequence says so against
+		// that sequence.
+		//
+		// Nothing below would find anything keyed to no sequence anyway, so as
+		// a guard this says what is meant rather than stopping anything --
+		// which is why no test kills it.
 		return
 	}
 	c.reorder(ds, roles, n, named, exact)
+	c.recount(ds, roles, n, named, exact)
+}
+
+// recount is what the notice costs the figure for how many records there are.
+//
+// It is answered against the MEMBERSHIP rather than the sequence -- the same
+// notice against the by-name and the by-size orders of one filter is one change
+// to one count, because sorting cannot make there be more or fewer records.
+//
+// A notice that names no sequence never reaches here at all, and the reason it
+// moves no count is with the guard that turns it back.
+func (c *cache) recount(ds dataSet, roles Roles, n Notice, named []*Value, exact bool) {
+	was, held := c.counts[ds.members]
+	if !held {
+		return // nothing stated, so nothing to correct
+	}
+	if n.Change == Added {
+		// Stated against this sequence, so it is in it.
+		c.counts[ds.members] = was.Add(1)
+		return
+	}
+	if n.Change == Altered && !filtersAny(roles, n.Fields) {
+		return // a field the filter does not test cannot change who is in
+	}
+	if !exact {
+		// A stretch that could not be walked names an unknown number of
+		// records, so what it costs the figure is unknown too.
+		delete(c.counts, ds.members)
+		return
+	}
+	if n.Change == Removed {
+		c.counts[ds.members] = was.Take(len(named)) // certainly gone
+	} else {
+		c.counts[ds.members] = was.Doubt(len(named)) // in or out, nobody said
+	}
+}
+
+// filtersAny reports whether any of these fields is one the filter tests.
+//
+// No fields named is every field, for the same reason it is everywhere here: a
+// source that cannot say which has said it cannot be precise, and the safe
+// reading is that membership may have moved.
+func filtersAny(roles Roles, fields []string) bool {
+	if len(fields) == 0 {
+		return true
+	}
+	for _, f := range fields {
+		if roles.Filters(f) {
+			return true
+		}
+	}
+	return false
 }
 
 // named is the records the notice covers, in the order the sequence puts them,

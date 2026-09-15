@@ -27,10 +27,11 @@ func ownCache(t *testing.T, places, records int) *cache {
 // counting is a source that says how much it was asked, so that a test can tell
 // an answer that came from the cache from one that came from underneath.
 type counting struct {
-	child Source
-	opens int
-	reads int
-	sent  int
+	child   Source
+	opens   int
+	reads   int
+	sent    int
+	counted int // how often it was asked how many records there are
 }
 
 func (c *counting) Open(spec *Spec) (DataSet, error) {
@@ -48,6 +49,13 @@ type countingSet struct {
 }
 
 func (s *countingSet) Close() { s.child.Close() }
+
+// A pass-through counts whatever its child counts, which is what any wrapper
+// that does not change who is in the sequence owes the one above it.
+func (s *countingSet) RecordCount() RecordCount {
+	s.src.counted++
+	return CountOf(s.child)
+}
 
 func (s *countingSet) Read(sc *Scope, out Sink) error {
 	s.src.reads++

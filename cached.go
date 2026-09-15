@@ -105,9 +105,12 @@ func (c *CachedSource) Open(spec *Spec) (DataSet, error) {
 		ds: dataSet{
 			// The records are the wrapper's, and every sequence over them is a
 			// sequence of the wrapper's: two sorts of one source share what
-			// their records hold and share nothing about where they stand.
-			source: c.key,
-			set:    c.key + "\x00" + dataSetKey(spec),
+			// their records hold and share nothing about where they stand --
+			// and share how many of them there are, which the filter decides
+			// and the sort cannot.
+			source:  c.key,
+			set:     c.key + "\x00" + dataSetKey(spec),
+			members: c.key + "\x00" + FilterKey(spec.Filter),
 		},
 		want: spec.Fields,
 	}, nil
@@ -127,6 +130,25 @@ type cachedSet struct {
 // Close lets this sequence go, and the child's with it. What was learned stays:
 // it belongs to the source and to the sequence, and neither has gone anywhere.
 func (s *cachedSet) Close() { s.child.Close() }
+
+// RecordCount is how many records this sequence has.
+//
+// What is held is asked first, and an exact figure there ends it -- either a
+// source said so, or a run covers the sequence end to end, and neither gets
+// better for asking again. Otherwise the child is asked and what it says is
+// filed, so that the next sequence over this filter has it without asking: a
+// re-sort costs a new order and not a new count.
+func (s *cachedSet) RecordCount() RecordCount {
+	held := hot.recordCount(s.ds)
+	if held.Exact {
+		return held
+	}
+	if from := CountOf(s.child); says(from, held) {
+		hot.learnCount(s.ds, from)
+		return hot.recordCount(s.ds)
+	}
+	return held
+}
 
 // Read answers one scope out of what is held, or asks the child and files what
 // comes back.

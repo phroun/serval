@@ -68,6 +68,13 @@ It's a sibling to the rest of the line: **Mew** (text editor), **PurfecTerm**
   altered field costs the order only in the sequences that field decides, and
   costs the values once, for the source. Nothing is fetched either way:
   invalidation causes forgetting, not traffic.
+- **How many there are is a figure, a floor, or nothing.** `RecordCount` is the
+  whole sequence's total, and it belongs to the FILTER rather than the order —
+  sorting the same records cannot make there be more or fewer — so clicking a
+  column header costs a new order and not a new count. A source holding its own
+  records has it for free, one that has read part of a sequence has a floor, and
+  a notice moves it: `Added` is one more, `Removed` one fewer, and anything
+  leaving membership in doubt lowers the floor rather than losing the figure.
 - **What is depended on can be stated.** `Covers(spec)` is the stretches of one
   sequence actually held, read off the runs rather than tracked beside them, and
   `Spec.Roles()` groups a sequence's fields by the part each plays — so a change
