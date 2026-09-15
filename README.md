@@ -60,6 +60,19 @@ It's a sibling to the rest of the line: **Mew** (text editor), **PurfecTerm**
   is asked against. So a second sort costs places and not fields, and a stretch
   already fetched for one field is topped up with another rather than fetched
   again.
+- **Staleness is told, never decided.** Nothing polls, nothing expires and no
+  generation is compared. A source *says* what happened — a record added,
+  removed, replaced, or altered in named fields — and the reason is what decides
+  the price. A record that has **left** a sequence is unlinked and the run's
+  claim survives it; one that may have **moved** takes its run with it. An
+  altered field costs the order only in the sequences that field decides, and
+  costs the values once, for the source. Nothing is fetched either way:
+  invalidation causes forgetting, not traffic.
+- **What is depended on can be stated.** `Covers(spec)` is the stretches of one
+  sequence actually held, read off the runs rather than tracked beside them, and
+  `Spec.Roles()` groups a sequence's fields by the part each plays — so a change
+  is classified by looking a name up, rather than by evaluating a filter or
+  comparing two boundaries.
 - **A record says how many members it has.** Every subset carries two counts —
   how many members stand by position, how many by name — so a later question
   can be answered without asking. Three of the first means `0`, `1` and `2` and

@@ -35,12 +35,14 @@ package serval
 //	| Replaced | forgotten              | the run goes: it may have moved       |
 //	| Altered  | those fields forgotten | the run goes where a named field decides, and nothing where none does |
 //
-// **A deletion is cheaper than a move**, and it is worth knowing why. Taking a
-// record out of the middle of a run normally breaks the claim across it -- that
-// is what eviction does, and the record is still in the sequence somewhere. A
-// record that has LEFT the sequence is different: everything still in the
-// sequence between the run's ends is still here, so the claim is as true as it
-// was and the run stays whole. The same operation, told apart by the reason.
+// **A deletion is cheaper than a move**, and it is worth knowing why. A record
+// taken out of the MIDDLE of a run normally breaks the claim across it -- which
+// is why making room only ever takes from an end: the record is still in the
+// sequence, so a run that had dropped it from the middle would be claiming
+// across a gap. A record that has LEFT the sequence is different: everything
+// still in the sequence between the run's ends is still here, so the claim is
+// as true as it was and the run stays whole. The same operation on the links,
+// told apart by the reason.
 //
 // **Everything else is conservative.** A record that may have moved takes its
 // run with it, rather than the run being cut around it: a cut would leave a
