@@ -29,7 +29,7 @@ func benchDoc(n int) string {
 	return b.String()
 }
 
-func benchSource(tb testing.TB, n int) *PSLSource {
+func benchSource(tb testing.TB, n int) *ListSource {
 	tb.Helper()
 	src, err := ParsePSLSource(benchDoc(n), Members)
 	if err != nil {

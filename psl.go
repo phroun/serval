@@ -26,7 +26,6 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
-	"sync"
 
 	"github.com/phroun/pawscript"
 )
@@ -86,17 +85,8 @@ const (
 // It is read-only and its records do not move, so everything computed from them
 // stays true: an ordering is built once per spec and reused for every scope
 // drawn from it.
-type PSLSource struct {
-	recs    []pslRecord
-	reading Reading
-
-	mu     sync.Mutex
-	cache  map[string]*ordering
-	recent []string // cache keys, oldest first
-}
-
 // ParsePSLSource reads PSL text and presents it as a data source.
-func ParsePSLSource(text string, reading Reading) (*PSLSource, error) {
+func ParsePSLSource(text string, reading Reading) (*ListSource, error) {
 	n, err := pawscript.ParsePSL(text)
 	if err != nil {
 		return nil, err
@@ -106,47 +96,17 @@ func ParsePSLSource(text string, reading Reading) (*PSLSource, error) {
 
 // NewPSLSource presents an already-parsed PSL list as a data source: its items as
 // records keyed by index, its keyed members as records keyed by name.
-func NewPSLSource(n *pawscript.PSLNode, reading Reading) *PSLSource {
-	p := &PSLSource{reading: reading, cache: map[string]*ordering{}}
-	p.recs = make([]pslRecord, 0, n.Len()+len(n.Map()))
+func NewPSLSource(n *pawscript.PSLNode, reading Reading) *ListSource {
+	rows := make([]Row, 0, n.Len()+len(n.Map()))
 	for i := 0; i < n.Len(); i++ {
 		v, _ := n.Item(i)
-		p.recs = append(p.recs, pslRecord{reading: reading, key: NewInt(int64(i)), value: v})
+		rows = append(rows, pslRecord{reading: reading, key: NewInt(int64(i)), value: v})
 	}
 	for _, k := range sortedKeys(n) {
 		v, _ := n.Get(k)
-		p.recs = append(p.recs, pslRecord{reading: reading, key: NewText(k), value: v})
+		rows = append(rows, pslRecord{reading: reading, key: NewText(k), value: v})
 	}
-	return p
-}
-
-// Len is how many records the source holds, before any filter.
-func (p *PSLSource) Len() int { return len(p.recs) }
-
-// Open states a sequence over the records: one filter, one sort.
-func (p *PSLSource) Open(spec *Spec) (DataSet, error) {
-	if spec == nil {
-		spec = &Spec{}
-	}
-	if err := supported(spec.Sort, p.reading); err != nil {
-		return nil, err
-	}
-	return &pslDataSet{src: p, spec: spec, ord: p.order(spec)}, nil
-}
-
-// supported refuses a sort this source cannot produce exactly. A collation it
-// does not carry, or a field this reading cannot reach, would yield an order
-// that is nearly right, which is worse than a refusal: a refusal is
-// recoverable and says what is wrong.
-func supported(levels []SortLevel, reading Reading) error {
-	for _, l := range levels {
-		switch l.Collation {
-		case "", CollateExact, CollateFold, CollateNatural:
-		default:
-			return fmt.Errorf("sort %s: no collation called %q", l.Field, l.Collation)
-		}
-	}
-	return nil
+	return NewListSource(rows)
 }
 
 // A pslRecord is one record: its key, and the PSL value it stands for.
@@ -213,7 +173,10 @@ func (r pslRecord) Field(name string) *Value {
 // Nothing is dropped either way. A member called `key` is a member like the
 // rest, because the record's identity is not in this bag at all and there is
 // nothing for it to shadow.
-func (r pslRecord) fields() Record {
+func (r pslRecord) Key() *Value { return r.key }
+
+// Fields is the record entire, under this reading's names.
+func (r pslRecord) Fields() Record {
 	node, isList := r.value.(*pawscript.PSLNode)
 	if r.reading == Members {
 		if !isList {
@@ -285,7 +248,7 @@ func pslValue(v any) *Value {
 		// questions they were written as, and neither turns into the other.
 		return NewSymbol(string(x))
 	case *pawscript.PSLNode:
-		return NewList(pslRecord{reading: Whole, value: x}.fields())
+		return NewList(pslRecord{reading: Whole, value: x}.Fields())
 	}
 	return NewText(fmt.Sprintf("%v", v))
 }
@@ -339,265 +302,3 @@ func sortedKeys(n *pawscript.PSLNode) []string {
 // conversion; doing it once per record rather than once per comparison is the
 // difference between a sort that reads the data n log n times and one that
 // reads it once.
-type ordering struct {
-	rows   []int
-	tuples [][]*Value
-	levels []Level
-
-	// at is where each record stands, by identity. A scope names its ends by
-	// identity rather than by position, so this is what turns `after=` into
-	// somewhere to start walking -- and it is built once, with the ordering,
-	// because every scope of this sequence needs it.
-	at map[string]int
-}
-
-// index is where a record stands in this sequence, and false for one that is
-// not in it. A record can fail to be here by having been filtered out as
-// easily as by not existing.
-func (o *ordering) index(id *Value) (int, bool) {
-	i, ok := o.at[Key(id)]
-	return i, ok
-}
-
-func (o *ordering) Len() int { return len(o.rows) }
-func (o *ordering) Swap(i, j int) {
-	o.rows[i], o.rows[j] = o.rows[j], o.rows[i]
-	o.tuples[i], o.tuples[j] = o.tuples[j], o.tuples[i]
-}
-func (o *ordering) Less(i, j int) bool {
-	return CompareLevels(o.tuples[i], o.tuples[j], o.levels) < 0
-}
-
-// order is the sequence a spec names, built if it has not been built already.
-//
-// Two data sets over the same sequence share one, and so does one opened
-// again on an order somebody had before -- which is the same click that
-// produced it the first time.
-func (p *PSLSource) order(spec *Spec) *ordering {
-	key := dataSetKey(spec)
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if o := p.cache[key]; o != nil {
-		return o
-	}
-
-	// The filter runs first, so a record that is not in the sequence is never
-	// sorted and never has its sort fields read.
-	o := &ordering{levels: ordering1(spec)}
-	for i := range p.recs {
-		if !Match(p.recs[i].key, p.recs[i], spec.Filter) {
-			continue
-		}
-		o.rows = append(o.rows, i)
-		o.tuples = append(o.tuples, tupleOf(p.recs[i], spec.Sort))
-	}
-	// The record's identity is the last level and no two records share one, so
-	// no two tuples are equal and there is nothing for stability to settle.
-	sort.Sort(o)
-
-	o.at = make(map[string]int, len(o.rows))
-	for i, row := range o.rows {
-		o.at[Key(p.recs[row].key)] = i
-	}
-
-	p.cache[key] = o
-	p.recent = append(p.recent, key)
-	for len(p.recent) > orderingsKept {
-		delete(p.cache, p.recent[0])
-		p.recent = p.recent[1:]
-	}
-	return o
-}
-
-// ordering1 is what the sequence compares positions by: a level per sort
-// level, and then the record's identity, which settles what the sort leaves
-// equal.
-func ordering1(spec *Spec) []Level {
-	return append(Levels(spec.Sort), Level{})
-}
-
-// dataSetKey names a data set: this source, this sort, this filter. Those three
-// decide which records are in the sequence and where each one stands, and two
-// queries naming the same three are reading the same body of data -- so
-// whatever was worked out for one of them holds for the other.
-//
-// The fields a query asks for are not among them: they change what a scope
-// carries, not which records are in it or where. Neither is the direction it is
-// read in -- one prepared ordering is walked either way, which is the whole
-// reason `reversed` belongs to the scope and not to the sequence.
-//
-// The source itself is not in the string because the table it keys is the
-// source's own.
-func dataSetKey(spec *Spec) string {
-	return SortKey(spec.Sort) + "\x00" + FilterKey(spec.Filter)
-}
-
-// tupleOf is a record's position: the value at each sort level, and then its
-// key. Without that last one two records could tie, and "the record after this
-// point" would name more than one place.
-func tupleOf(rec pslRecord, levels []SortLevel) []*Value {
-	out := make([]*Value, 0, len(levels)+1)
-	for _, l := range levels {
-		out = append(out, rec.Field(l.Field))
-	}
-	return append(out, rec.key)
-}
-
-// --- the data set ------------------------------------------------------
-
-type pslDataSet struct {
-	src  *PSLSource
-	spec *Spec
-	ord  *ordering
-}
-
-// Close lets the data set go. The ordering stays in the source's cache until
-// something newer pushes it out, because the records it orders have not moved.
-func (v *pslDataSet) Close() { v.ord = nil }
-
-// RecordCount is exact and costs nothing. The sequence was ordered when it was
-// opened, so the records that passed the filter are already in a slice and how
-// many there are is its length. A source that has to fetch its records pays for
-// this figure; one that holds them has it whether or not anyone asks.
-func (v *pslDataSet) RecordCount() RecordCount {
-	if v.ord == nil {
-		return Unknown() // closed, and its ordering let go of
-	}
-	return Exactly(v.ord.Len())
-}
-
-// Read produces one scope.
-//
-// Where it starts is a map lookup: the ordering knows where every record of the
-// sequence stands, so `after=` becomes an index rather than a walk. From there
-// it is a step in one direction or the other, counting.
-//
-// An `after` this sequence does not hold is refused. It cannot be placed --
-// what put a record where it was were that record's own values, and they went
-// with it -- and guessing would hand back a run from somewhere the asker did
-// not ask about, with nothing to mark it as the wrong place.
-func (v *pslDataSet) Read(s *Scope, out Sink) error {
-	o := v.ord
-	if o == nil {
-		return fmt.Errorf("this data set has been closed")
-	}
-
-	step := 1
-	i := 0
-	if s.Reversed {
-		step = -1
-		i = len(o.rows) - 1
-	}
-	if s.After != nil {
-		at, ok := o.index(s.After)
-		if !ok {
-			out.Done(Complete{Error: fmt.Sprintf(
-				"after %s: no record of mine is in this sequence under that identity",
-				s.After.String())})
-			return nil
-		}
-		i = at + step
-	}
-
-	// An `until` this sequence does not hold is not a refusal. It only says
-	// where the asker's own knowledge picks up again, and one that cannot be
-	// placed simply never arrives -- the walk runs to its count instead.
-	stop := -1
-	if s.Until != nil {
-		if at, ok := o.index(s.Until); ok {
-			stop = at
-		}
-	}
-
-	// Said before the records, which is where it can be acted on.
-	out.Ordered()
-
-	done := Complete{}
-	last := s.After
-	sent := 0
-	for ; i >= 0 && i < len(o.rows); i += step {
-		if i == stop {
-			// The next record is one the asker already holds, so what it holds
-			// on this side and what it holds on that are now one run.
-			done.Stop = StopJoined
-			break
-		}
-		if sent >= s.Count {
-			done.Stop = StopFilled
-			break
-		}
-		rec := v.src.recs[o.rows[i]]
-		bag, has, whole := v.fields(rec)
-		var err error
-		if whole {
-			err = out.Record(rec.key, bag)
-		} else {
-			err = out.Subset(rec.key, bag, has)
-		}
-		if err != nil {
-			return err
-		}
-		last = rec.key
-		sent++
-	}
-
-	if done.Stop == "" {
-		// Walked off the end: nothing more this way, and so no point past the
-		// end to be complete up to.
-		done.Stop = StopExhausted
-	} else {
-		done.Watermark = last
-	}
-	out.Done(done)
-	return nil
-}
-
-// fields is what one record carries in this scope, how many members the record
-// HAS altogether, and whether what goes out is the whole of it.
-//
-// Whole is the stronger claim and it is only made where it is true: a list of
-// fields was asked for, or an exclusion took something out, and what goes out
-// is a subset. Narrowing to a list that happens to name everything is still
-// answered as a subset, which is the weaker claim and therefore always safe --
-// and the totals beside it say so exactly, which is what lets the far end work
-// out for itself that it now holds the lot.
-//
-// **A field the record has not got goes out as undefined** rather than being
-// left out. Left out it reads as a field nobody asked about, and the next query
-// naming it asks all over again; sent, it is a guarantee that the record has
-// not got it. This source holds its records entire, so it always knows which of
-// the two it is looking at.
-func (v *pslDataSet) fields(rec pslRecord) (Record, Totals, bool) {
-	bag := rec.fields()
-	has := Tally(bag)
-
-	want := v.spec.Fields
-	if len(want) == 0 {
-		out := v.without(bag)
-		return out, has, len(out) == len(bag)
-	}
-	out := make(Record, 0, len(want))
-	for _, a := range want {
-		if v.spec.Exclude.Has(a.Name) {
-			continue
-		}
-		// Present with its value, or present with nothing under it, which says
-		// the record has not got it and is an answer rather than a silence.
-		out = append(out, &Field{Name: a.Name, Value: rec.Field(a.Name)})
-	}
-	return out, has, false
-}
-
-// without drops the fields the query said it did not want.
-func (v *pslDataSet) without(bag Record) Record {
-	if len(v.spec.Exclude) == 0 {
-		return bag
-	}
-	out := make(Record, 0, len(bag))
-	for _, a := range bag {
-		if !v.spec.Exclude.Has(a.Name) {
-			out = append(out, a)
-		}
-	}
-	return out
-}

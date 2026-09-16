@@ -44,7 +44,7 @@ const twoWays = `(
 )`
 
 // mustPSL is a PSL source of the text, or a failed test.
-func mustPSL(t *testing.T, text string) *PSLSource {
+func mustPSL(t *testing.T, text string) *ListSource {
 	t.Helper()
 	src, err := ParsePSLSource(text, Whole)
 	if err != nil {
@@ -341,7 +341,7 @@ func TestOneSequenceIsOrderedOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.(*pslDataSet).ord != b.(*pslDataSet).ord {
+	if a.(*listDataSet).ord != b.(*listDataSet).ord {
 		t.Error("two data sets over one sequence built it twice")
 	}
 
@@ -360,7 +360,7 @@ func TestOneSequenceIsOrderedOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.(*pslDataSet).ord == a.(*pslDataSet).ord {
+	if c.(*listDataSet).ord == a.(*listDataSet).ord {
 		t.Error("the cache grew without limit")
 	}
 	out, _ := fill(t, c, &Scope{Count: 10})
