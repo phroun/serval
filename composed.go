@@ -73,6 +73,74 @@ func NewComposedSource(includes ...Include) (*ComposedSource, error) {
 	}, nil
 }
 
+// Stale says a record this source has placed may no longer be where it was.
+//
+// It needs no extent and no reason. What this source holds of a record is one
+// note -- where it stood, and where each include stood as it went out -- and
+// either that is still right or it is not. Told, never decided, the same as
+// everywhere else.
+//
+// **Forgetting a note is safe, which is what makes this cheap.** A note says
+// where this source WAS when it last spoke about a record, so a scope resuming
+// from one it has not got is REFUSED rather than answered wrongly. The whole
+// price of forgetting too much is a refusal, and a refusal is an answer.
+//
+// It is answered against no sequence, because a record moving is a fact about
+// the record: every order over this source placed it, and every one of them
+// placed it wrongly.
+//
+// # The note of it, and the notes that mention it
+//
+// Two different things go, and the second is the one that is easy to miss.
+//
+// The note OF the record is obviously wrong: it says where that record stood
+// and where the includes stood as it went out, and it may have moved.
+//
+// But a note of ANY OTHER record may name it too. A note's vector holds each
+// include's own cursor -- the last record that include had handed over at that
+// moment -- and this record may be one of them. Resuming from such a note would
+// ask that include to carry on past a record that is no longer where it says,
+// and the include would answer from somewhere else without anyone finding out.
+// So those go as well, and finding them is a walk of a bounded book.
+//
+// The tuple of where a record STOOD needs no such walk: it is that record's own
+// values and says nothing about anybody else's.
+func (c *ComposedSource) Stale(key *Value) {
+	if key == nil {
+		return // nothing named is nothing to forget, and no note is keyed to it
+	}
+	gone := Key(key)
+	for _, held := range c.notes.all() {
+		if len(held.places) < 2 {
+			continue
+		}
+		placed, stood := held.places[0], held.places[1]
+
+		// Every note whose vector names it, found by putting each include's own
+		// key back together into the outer one it appears under. That is a pure
+		// function of the name and the key, so the trace is a rebuild and a
+		// compare rather than a lookup.
+		names := placed.naming(func(where []*Value) bool {
+			for i, at := range where {
+				if i < len(held.slots) && at != nil &&
+					Key(composedKey(held.slots[i], at)) == gone {
+					return true
+				}
+			}
+			return false
+		})
+		// The note OF the record is in that list already: `hand` sets an
+		// include's cursor to the record it is handing on before it takes the
+		// snapshot, so a record's own note always names it. Forgetting it
+		// outright says what is meant rather than leaning on that, which is why
+		// no test kills the second half of this.
+		for _, k := range append(names, gone) {
+			placed.forget(k)
+			stood.forget(k)
+		}
+	}
+}
+
 // separator stands between an include's name and the child's key.
 const separator = "/"
 
@@ -96,7 +164,16 @@ func (c *ComposedSource) Open(spec *Spec) (DataSet, error) {
 		src: c, spec: spec, steps: steps, levels: levels,
 		byID: hasID(spec.Filter),
 	}
-	notes := c.notes.of(spec, 2)
+	// The slots are named as the parts are gathered, because a note's vector
+	// holds one position per PART and a filter may rule an include out of a
+	// sequence entirely. See placebook.
+	var slots []string
+	for _, in := range c.includes {
+		if _, possible := narrow(spec.Filter, in.Name); possible {
+			slots = append(slots, in.Name)
+		}
+	}
+	notes := c.notes.of(spec, 2, slots...)
 	set.placed, set.stood = notes[0], notes[1]
 	for _, in := range c.includes {
 		asked, possible := narrow(spec.Filter, in.Name)

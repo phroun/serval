@@ -1090,3 +1090,112 @@ func TestAnIncludeThatWillNotCountLeavesAFloor(t *testing.T) {
 		t.Errorf("it counted %s", got)
 	}
 }
+
+// --- being told a record may have moved -----------------------------------
+
+// noted reports whether this source still has a note of where a record stood.
+func noted(c *ComposedSource, spec *Spec, key string) bool {
+	for _, held := range c.notes.all() {
+		if _, ok := held.places[0].get(NewSymbol(key)); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// The queue and the table say the same thing after a note is forgotten. A queue
+// still naming what has gone would evict LIVE notes to make room for dead
+// names, which is the bound quietly shrinking.
+func TestForgettingLeavesTheNotesConsistent(t *testing.T) {
+	p := newPlaces()
+	p.put(NewSymbol("a"), nil)
+	p.put(NewSymbol("b"), nil)
+
+	p.forget(Key(NewSymbol("a")))
+	p.put(NewSymbol("a"), nil) // and noted again, which is the ordinary case
+
+	if len(p.seen) != len(p.at) {
+		t.Errorf("%d names queued against %d notes held", len(p.seen), len(p.at))
+	}
+}
+
+// What this source holds of a record is one note -- where it stood, and where
+// each include stood as it went out -- and being told it may have moved is
+// being told to forget it.
+func TestANoteGoesWhenTheRecordMayHaveMoved(t *testing.T) {
+	c := twoIncludes(t)
+	read(t, c, unsorted(), &Scope{Count: 10})
+
+	if !noted(c, unsorted(), "left/1") {
+		t.Fatal("reading the sequence left no note of where a record stood")
+	}
+
+	c.Stale(NewSymbol("left/1"))
+
+	if noted(c, unsorted(), "left/1") {
+		t.Error("the note of it survived being told it may have moved")
+	}
+}
+
+// A note of ANY OTHER record may name it too, and that is the one that is easy
+// to miss. A note's vector holds each include's own cursor -- the last record
+// it had handed over at that moment -- so resuming from such a note would ask
+// that include to carry on past a record that is no longer where it says.
+func TestTheNotesThatMentionItGoWithIt(t *testing.T) {
+	c := twoIncludes(t)
+	out, _ := read(t, c, unsorted(), &Scope{Count: 10})
+	if out.joined() != "left/0,left/1,left/note,right/0,right/1" {
+		t.Fatalf("the sequence is %s", out.joined())
+	}
+
+	// `right/0` went out after every record of `left`, so its note names
+	// `left/note` as the left include's cursor -- and nothing about `right/0`
+	// itself has changed.
+	if !noted(c, unsorted(), "right/0") {
+		t.Fatal("no note of it")
+	}
+	c.Stale(NewSymbol("left/note"))
+
+	if noted(c, unsorted(), "right/0") {
+		t.Error("a note naming the record that moved survived")
+	}
+	// And a note that mentions neither is left alone: forgetting is safe, which
+	// is not the same as forgetting being free.
+	if !noted(c, unsorted(), "left/0") {
+		t.Error("a note naming nothing that moved went with it")
+	}
+}
+
+// Forgetting is safe because a scope resuming from a note this source has not
+// got is REFUSED rather than answered wrongly. The whole price is a refusal,
+// and a refusal is an answer.
+func TestAScopeResumingFromAForgottenNoteIsRefused(t *testing.T) {
+	c := twoIncludes(t)
+	read(t, c, unsorted(), &Scope{Count: 10})
+
+	on := opened(t, c, unsorted())
+	if out, _ := on.scope(&Scope{After: NewSymbol("left/1"), Count: 2}); out.done.Error != "" {
+		t.Fatalf("before forgetting, it answered with %q", out.done.Error)
+	}
+
+	c.Stale(NewSymbol("left/1"))
+
+	out, _ := on.scope(&Scope{After: NewSymbol("left/1"), Count: 2})
+	if out.done.Error == "" {
+		t.Errorf("resuming from a forgotten note gave %s", out.joined())
+	}
+}
+
+// Being told about a record this source never placed costs nothing, and being
+// told about nothing at all is nothing to be told.
+func TestBeingToldAboutWhatIsNotHeldCostsNothing(t *testing.T) {
+	c := twoIncludes(t)
+	read(t, c, unsorted(), &Scope{Count: 10})
+
+	c.Stale(NewSymbol("left/nowhere"))
+	c.Stale(nil)
+
+	if !noted(c, unsorted(), "left/1") {
+		t.Error("a note went for a record nobody named")
+	}
+}

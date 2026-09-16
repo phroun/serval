@@ -30,7 +30,12 @@ import (
 const placesKept = 1024
 
 // A places remembers where records stood, oldest forgotten first.
+//
+// Guarded, because a note is written while a scope is being answered and
+// FORGOTTEN whenever a source is told one of its records may have moved -- and
+// those are two different goroutines with nothing between them.
 type places struct {
+	mu   sync.Mutex
 	at   map[string][]*Value
 	seen []string
 }
@@ -46,6 +51,8 @@ func (p *places) put(id *Value, tuple []*Value) {
 	if id == nil {
 		return
 	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	k := Key(id)
 	if _, had := p.at[k]; !had {
 		p.seen = append(p.seen, k)
@@ -65,8 +72,46 @@ func (p *places) get(id *Value) ([]*Value, bool) {
 	if id == nil {
 		return nil, false
 	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	t, ok := p.at[Key(id)]
 	return t, ok
+}
+
+// forget drops what was noted about one record, by the key `put` filed it
+// under.
+//
+// Losing a note is not losing anything true. It says where this source WAS when
+// it last spoke about that record, so a scope resuming from one it has not got
+// is refused rather than answered wrongly -- which is what makes forgetting the
+// safe half of this, and worth doing generously.
+func (p *places) forget(k string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, had := p.at[k]; !had {
+		return
+	}
+	delete(p.at, k)
+	for i, seen := range p.seen {
+		if seen == k {
+			p.seen = append(p.seen[:i], p.seen[i+1:]...)
+			break
+		}
+	}
+}
+
+// naming is the keys of every note whose tuple answers the test -- which is how
+// a source finds the notes that mention a record, rather than the note OF one.
+func (p *places) naming(hit func(tuple []*Value) bool) []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var out []string
+	for k, t := range p.at {
+		if hit(t) {
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 // A placebook is one source's notes, kept per prepared sequence.
@@ -82,33 +127,58 @@ func (p *places) get(id *Value) ([]*Value, bool) {
 // and an unbounded pile of them is not worth keeping.
 type placebook struct {
 	mu     sync.Mutex
-	books  map[string][]*places
+	books  map[string]*book
 	recent []string
 }
 
+// A book is one sequence's notes, and what each position in one means.
+//
+// The slots matter because a note may be a vector -- a composed source writes
+// down where each of its INCLUDES stood -- and each position in it holds that
+// include's OWN key. Without knowing which include a position belongs to, an
+// inner key cannot be turned back into the outer one it appears under, and two
+// includes keyed alike would be told apart by nothing.
+type book struct {
+	places []*places
+	slots  []string
+}
+
 func newPlacebook() *placebook {
-	return &placebook{books: map[string][]*places{}}
+	return &placebook{books: map[string]*book{}}
 }
 
 // of is the notes for one sequence, made if this is the first scope of it.
 // Each sequence gets `n` of them, because a source may have more than one thing
 // to remember about the same record.
-func (b *placebook) of(spec *Spec, n int) []*places {
+func (b *placebook) of(spec *Spec, n int, slots ...string) []*places {
 	key := dataSetKey(spec)
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if p := b.books[key]; p != nil {
-		return p
+	if held := b.books[key]; held != nil {
+		return held.places
 	}
 	p := make([]*places, n)
 	for i := range p {
 		p[i] = newPlaces()
 	}
-	b.books[key] = p
+	b.books[key] = &book{places: p, slots: slots}
 	b.recent = append(b.recent, key)
 	for len(b.recent) > orderingsKept {
 		delete(b.books, b.recent[0])
 		b.recent = b.recent[1:]
 	}
 	return p
+}
+
+// all is every sequence's notes, taken as a copy: what is done to them may
+// forget entries, and forgetting one while walking the list is how a walk goes
+// wrong.
+func (b *placebook) all() []*book {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := make([]*book, 0, len(b.books))
+	for _, held := range b.books {
+		out = append(out, held)
+	}
+	return out
 }
