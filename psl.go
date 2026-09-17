@@ -97,16 +97,42 @@ func ParsePSLSource(text string, reading Reading) (*ListSource, error) {
 // NewPSLSource presents an already-parsed PSL list as a data source: its items as
 // records keyed by index, its keyed members as records keyed by name.
 func NewPSLSource(n *pawscript.PSLNode, reading Reading) *ListSource {
+	return NewPSLSourceExcept(n, reading)
+}
+
+// NewPSLSourceExcept is the same, less the keyed members named.
+//
+// A flat reading takes every keyed member for a record, `_bundle` included,
+// because only the layer above knows which of them are ABOUT the document
+// rather than in it. That layer says so here, and its records are then the
+// document's own with nothing of the format's mixed in.
+func NewPSLSourceExcept(n *pawscript.PSLNode, reading Reading, skip ...string) *ListSource {
+	gone := make(map[string]bool, len(skip))
+	for _, k := range skip {
+		gone[k] = true
+	}
 	rows := make([]Row, 0, n.Len()+len(n.Map()))
 	for i := 0; i < n.Len(); i++ {
 		v, _ := n.Item(i)
 		rows = append(rows, pslRecord{reading: reading, key: NewInt(int64(i)), value: v})
 	}
 	for _, k := range sortedKeys(n) {
+		if gone[k] {
+			continue
+		}
 		v, _ := n.Get(k)
 		rows = append(rows, pslRecord{reading: reading, key: NewText(k), value: v})
 	}
 	return NewListSource(rows)
+}
+
+// PSLFields is what one PSL value carries, named the way a reading names them.
+//
+// It is the record a document's member WOULD be, without a source to hold it:
+// what the layer above needs when it takes a value out of one document and
+// stands it in another's place.
+func PSLFields(key *Value, v any, reading Reading) Record {
+	return pslRecord{reading: reading, key: key, value: v}.Fields()
 }
 
 // A pslRecord is one record: its key, and the PSL value it stands for.
