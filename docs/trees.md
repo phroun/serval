@@ -1,12 +1,21 @@
 # A tree as a source
 
-> **Status: being built.** `marks.go` is the expansion, `treepath.go` is
-> `Standing` — the three readings — and `treechild.go` is `ChildType` and its
-> criteria. `TreeSource` itself is not written yet, so the sections about
-> flattening, counting and scopes are still conversation. Where building changed
-> a decision, it says so and the decision has been rewritten rather than
-> annotated. `sources.md` is what a source is, `ordering.md` is the comparison
-> rules, and `census.md` is what decision 7 leans on.
+> **Status: built, over records that are here.** `marks.go` is the expansion,
+> `treepath.go` is `Standing` — the three readings — `treechild.go` is
+> `ChildType` and its criteria, and `tree.go` is `TreeSource`.
+>
+> **The flattening is eager**: opening a data set walks every visible row and
+> holds it, which makes the count, the positions and `From` all exact, and which
+> is right for records in hand. A source that must be ASKED wants the window and
+> not the whole, and that is the next piece rather than a different design — the
+> same interface, answered lazily. **The census is not wired in either**, so
+> expandability counts one node at a time; joining it needs a child type to say
+> which field a census of its children would partition by.
+>
+> Where building changed a decision, it says so and the decision has been
+> rewritten rather than annotated. `sources.md` is what a source is,
+> `ordering.md` is the comparison rules, and `census.md` is what decision 7
+> leans on.
 
 A tree is a sequence. That is the whole of the idea, and everything else follows
 from taking it seriously.
@@ -438,13 +447,18 @@ refuses says the data is a tree and means it. A tree that allows says the data
 is a graph and showing the loop once is how somebody SEES it — which is what
 several file managers do deliberately, and the reason this is not a rule.
 
-**`Revisits`, 0 to 3, and 0 is the default.** It is how many times a node may
-appear again beneath itself on one root-to-leaf path. Zero refuses, so a node
-already standing on its own path is not expandable and draws no twisty. One
-shows the loop, which is the point of allowing it at all. The cap is three
-because the reason to allow any is to make the cycle visible and nobody has ever
-needed a fourth lap to see one; a value above it is clamped rather than refused,
-the way a count is.
+**`Revisits`, 0 to 3, and 0 is the default.** It is how many times a node may be
+EXPANDED again beneath itself on one root-to-leaf path. The cap is three because
+the reason to allow any is to make the cycle visible and nobody has ever needed a
+fourth lap to see one; a value above it is clamped rather than refused, the way a
+count is.
+
+**It governs expansion and never emission**, which is the sharper version of a
+sentence this note first wrote two ways. A row the criterion says is a child IS a
+child, so a node standing on its own path is still drawn — with a dead twisty.
+Hiding it would make the tree lie about what is under a node, and that is worse
+than showing a loop: the budget exists to bound the WALK, not to censor the data.
+So zero does not mean a node appears once; it means a node is opened once.
 
 **Counted on the record's IDENTITY, never on the path.** A cycle appends a
 segment each time round — `/a/b/a/b/` — so every lap has a path nobody has seen
