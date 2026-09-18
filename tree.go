@@ -708,3 +708,29 @@ func (l *levelRows) Record(id *Value, f Record) error {
 }
 func (l *levelRows) Subset(id *Value, f Record, _ Totals) error { return l.Record(id, f) }
 func (l *levelRows) Done(c Complete)                            { l.err = c.Error }
+
+// A TreeFielded source says what names it writes its tree fields under.
+//
+// Optional, on the model of Counting and Censusing: a source that is not a tree
+// is not one of these, and a reader asking gets told so rather than having to
+// guess from whether a field happens to be there. That difference matters --
+// "a tree that could not count this row's children" and "not a tree at all" are
+// two answers, and sniffing for a field conflates them.
+//
+// A wrapper over a tree may forward it, and one that does not simply reads as not
+// a tree, which is a missing capability rather than a wrong answer.
+type TreeFielded interface {
+	TreeFields() TreeFields
+}
+
+// TreeFields is what this source writes its added fields under.
+func (t *TreeSource) TreeFields() TreeFields { return t.opt.Fields }
+
+// TreeFieldsOf asks a source what it writes its tree fields under, and reports
+// false for one that is not a tree.
+func TreeFieldsOf(src Source) (TreeFields, bool) {
+	if t, ok := src.(TreeFielded); ok {
+		return t.TreeFields(), true
+	}
+	return TreeFields{}, false
+}
