@@ -106,6 +106,15 @@ It's a sibling to the rest of the line: **Mew** (text editor), **PurfecTerm**
   different kinds, 3 and 3.0 are different numbers, and floats compare by their
   bits so that a key is reflexive.
 
+## Docs
+
+- [`docs/sources.md`](docs/sources.md) — what a source is, what a format loads
+  into one, how several compose under names of their own, and what a scope
+  costs at either end of a long sequence.
+- [`docs/ordering.md`](docs/ordering.md) — the comparison and membership rules,
+  which two holders of one sequence have to compute the same way without
+  conferring.
+
 ## Use
 
 ```go
