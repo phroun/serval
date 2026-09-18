@@ -27,7 +27,8 @@ So a `TreeSource` wraps a source and presents the rows that are VISIBLE.
 ## What it produces, and what that buys
 
 A flat sequence, in pre-order, of the rows that are currently visible. Each
-carries its depth.
+carries its depth, its path, and whether it can be expanded — three things a
+tree knows and a record need not.
 
 Everything downstream then works unchanged, and this is the point of the whole
 design rather than a happy accident:
@@ -102,23 +103,55 @@ Two or three constructors cover the shapes above. A language for saying this
 belongs with bundles authoring trees, which is a real thing to want later and a
 parser to write when something needs it rather than now.
 
-## The path, and the ambiguity in it
+## The path is not the identity
 
-A row's identity in a tree is its PATH, not its key: two parents may each have a
-child keyed `x`. The path is the parent's path, a separator, the child's key —
-the same grammar `ComposedSource` uses, splitting on the first slash so each
-layer sheds one name and hands the rest down.
+**A record keeps its own identity and the tree does not rewrite it.** A path is
+a different thing that stands beside it, and conflating the two was the first
+mistake this design made.
 
-**A path joined with slashes is ambiguous**, because a key may itself contain a
-slash: that was decided deliberately, a slash inside a key being what makes the
-key an address. So parent `a` with a child keyed `b/c`, and parent `a/b` with a
-child keyed `c`, both spell `a/b/c`. `ComposedSource` does not meet this because
-it refuses a slash in an include NAME and the ambiguity only bites at a leaf. A
-tree has no leaves in that sense: every node can become a parent.
+They are separated in the data all the time. A file's identity may be an inode
+and its path `/usr/local/bin`. A message's identity is a message id and its
+place in a thread is somewhere else entirely. A row's key may be a database
+primary key while what makes it a child is a `parent` column. None of those
+paths are keys and none of those keys are paths.
 
-Marks are therefore keyed by a **length-prefixed join** — `1:a|3:b/c` — which is
-unambiguous, is still one string, and still prefix-matches for the wiping rule.
-The joined-with-slashes form stays what is shown and what an address uses.
+So the path is a **field**, got one of two ways:
+
+| | |
+|---|---|
+| **read** | the record carries its whole path, materialised, in a field the tree is told to read |
+| **derived** | the tree builds it as it descends: the parent's path, the delimiter, and this row's SEGMENT — a field, defaulting to the record's key |
+
+The first suits data that already knows where it lives. The second suits an
+adjacency list, where the hierarchy is edges and nothing has written a path
+down.
+
+**The delimiter is the caller's to choose.** `/` for something filesystem-like,
+`.` for a namespace, `::`, whatever the data uses — and where the tree DERIVES a
+path, choosing a delimiter the segments do not contain is what keeps the path
+unambiguous. That is the answer to the ambiguity an earlier draft of this
+worried about at length: it was worried about paths built out of record keys
+that may contain slashes, and once the delimiter is chosen for the data the
+question does not arise. A segment containing the delimiter makes a path that
+means two things, and it is the caller's to avoid, exactly as a duplicate key is.
+
+Marks are keyed by the path, which is now a string the caller's own delimiter
+makes unambiguous. Nothing needs escaping and nothing needs length-prefixing.
+
+### What identifies a row of the flattened sequence
+
+The record's own identity, unchanged — which is unique across a tree nested
+inside ONE source, because a source's keys are unique.
+
+It is not unique where a tree grafts a second source under rows of the first:
+two sources may each hold a record keyed `3`. Nor where the same record hangs
+under two parents, which is a graph drawn as a tree — then one identity stands
+at two positions, and a reader asking where it stands has two answers.
+
+Neither is solved here. Where either is wanted, the path is what tells the rows
+apart and the tree is told to identify rows by path instead. That is a choice a
+caller makes knowing why, rather than a cost every tree pays: a path is longer
+than a key, and a tree of one source never needs it.
 
 ## Filtering, shallow and deep
 
@@ -165,9 +198,26 @@ one place where it can be solved once.
    sets over one spec would disagree about what the sequence contains, and "the
    same three name the same sequence" is load-bearing.
 4. A child type is a function from record to `Spec`, with constructors.
-5. Paths are keyed by a length-prefixed join.
+5. A record keeps its identity; the PATH is a separate field, read or derived,
+   with a delimiter the caller chooses. Identifying rows by path instead is
+   available for a tree that grafts sources or repeats a record, and is not the
+   default.
 6. Deep filtering is eager and is for records in hand.
-7. **Pre-order is built, not sorted.** It does not fall out of `CompareLevels`:
+7. **Expandability is a field.** A source that knows says so, and one that does
+   not leaves it undefined, which reads as a leaf. Over records in hand a tree
+   can work it out from its own buckets and the field is a shortcut; over
+   records that must be asked it is the only way to draw a twisty without
+   opening every visible row. A field that may hold a NUMBER says how many,
+   which also bounds the unknown extent of an `openAll` one level at a time --
+   so `undefined` or `false` is a leaf, `true` is children of unknown number,
+   and a number is that many.
+8. **A sort naming a field a record has not got is not refused.** It reads as
+   `undefined`, which is a value with a rank, so those rows gather at the bottom
+   of that level and are separated by the levels after it and by the identity
+   that settles the rest. This is what serval already does — `supported` refuses
+   an unknown collation and nothing else — and it matters for a tree because a
+   grafted child source need not carry the field the sort names.
+9. **Pre-order is built, not sorted.** It does not fall out of `CompareLevels`:
    that stops where the shorter run ends and returns 0, so `[a]` and `[a, b]`
    compare EQUAL rather than parent-before-child. A tuple per level cannot
    express a varying-depth path either. `TreeSource` orders its own sequence.
@@ -179,20 +229,13 @@ one place where it can be solved once.
   notice about the sequence or one per record is the same question
   `live-data-negotiation.md` asks about everything else, and the answer should
   be the same answer.
-- **Whether a row's expandability is a field.** Over records in hand the source
-  knows it from the buckets. Over records that must be asked it does not, and
-  drawing a twisty would mean opening every visible row — so a field the source
-  MAY carry, used where it is there. Which field, and whether it is a count or a
-  flag, is undecided; a count also bounds the unknown extent of an `openAll`.
 - **Cycles.** A child type keyed on a prefix can make a node its own descendant.
   The path is in hand, so refusing to open a node already on its own path is
   cheap — but some file managers deliberately allow it, so whether this is a
   rule or a setting is not settled.
-- **Whether a sort passes down.** Sorting a tree by size should surely sort each
-  level by size, but a child type naming a different source may not carry the
-  field the sort names, and a sequence that cannot be produced exactly is
-  refused rather than approximated. What that refusal looks like partway down a
-  tree is undiscussed.
+- **What a row's path field is called**, and whether the same tree can read a
+  path from some rows and derive it for others — a graft whose second source
+  materialises paths under a first that does not.
 
 ## The risk worth naming
 

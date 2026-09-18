@@ -83,10 +83,16 @@ func (l *ListSource) Open(spec *Spec) (DataSet, error) {
 	return &listDataSet{src: l, spec: spec, ord: l.order(spec)}, nil
 }
 
-// supported refuses a sort this source cannot produce exactly. A collation it
-// does not carry, or a field this reading cannot reach, would yield an order
-// that is nearly right, which is worse than a refusal: a refusal is
-// recoverable and says what is wrong.
+// supported refuses a sort this source cannot produce exactly: a collation it
+// does not carry would yield an order that is nearly right, which is worse than
+// a refusal, a refusal being recoverable and saying what is wrong.
+//
+// **A field it cannot reach is not among them.** A field a record has not got
+// reads as `undefined`, which is a value with a rank rather than an absence, so
+// the level it names still orders every record -- those without it together at
+// the bottom of that level, separated by whatever levels come after and by the
+// identity that settles the rest. That is an exact order over what was asked
+// for, not an approximation of one, so there is nothing to refuse.
 func supported(levels []SortLevel) error {
 	for _, l := range levels {
 		switch l.Collation {
