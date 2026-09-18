@@ -83,23 +83,41 @@ record. Most of them are one predicate:
 | | | |
 |---|---|---|
 | its parent by key | `eq parent <the parent's key>` | an adjacency list |
-| its container | `eq path <the parent's own path>` | a row that says where it LIVES |
-| everything under it | `starts path <the parent's own path>` | the subtree, deliberately |
+| its container | `eq location <the parent's own path>` | a row that says where it LIVES |
+| everything under it | `starts location <the parent's own path>` | the subtree, deliberately |
 
 All three are expressible with what a filter already has: `OpEq` and `OpStarts`
 exist. Nothing new is needed to SAY what a child is.
 
-The second is the one to reach for, and it turns on **what a path field holds**.
-A field holding the row's CONTAINER — where it lives, not what it is — makes
-children one equality: every row whose container is this row's own path. A field
-holding the row's own full path does not, because no operator can take the
-parent off the front of it, and the parent's path is not written down anywhere
-to compare against.
+The second is the one to reach for, and it turns on **what the field holds**.
+The name here is `location` rather than `path` on purpose, because `path` is the
+word that caused this design's worst misreading: it can mean where a row LIVES
+or it can mean the row's own full address, and the two behave completely
+differently. A field holding the CONTAINER makes children one equality — every
+row whose location is this row's own path. A field holding the row's own full
+address does not, because no operator can take the parent off the front of it,
+and the parent's address is not written down anywhere to compare against.
 
-So `eq` gives children and `starts` gives descendants, which is the shallow and
-deep distinction expressed in the criterion rather than added beside it. A
-caller wanting the subtree in one question asks for it; one wanting a level asks
-for that.
+Something filesystem-shaped, two fields, nothing derived:
+
+| `location` | `name` | its own path |
+|---|---|---|
+| `/` | `usr` | `/usr/` |
+| `/usr/` | `local` | `/usr/local/` |
+| `/usr/local/` | `bin` | `/usr/local/bin/` |
+| `/usr/local/` | `share` | `/usr/local/share/` |
+
+The children of `/usr/local/` are `eq location "/usr/local/"` — the two rows,
+one equality, no depth field and no prefix arithmetic. Everything beneath it is
+`starts location "/usr/local/"`, which is the same criterion with the other
+operator. So `eq` gives children and `starts` gives descendants, which is the
+shallow and deep distinction expressed in the criterion rather than added beside
+it. A caller wanting the subtree in one question asks for it; one wanting a level
+asks for that.
+
+The field is called whatever the data calls it — `directory`, `container`,
+`folder`, `thread` — and the tree is told which name it is. `location` is this
+document's example and not a reserved word.
 
 A type naming the same source as the top level makes a hierarchy nested inside
 one body of records, by those same rules all the way down. A type naming a
@@ -131,7 +149,7 @@ So the path is a **field**, got one of three ways:
 
 | | |
 |---|---|
-| **its container, plus its name** | the record says where it LIVES and what it is called, and its own path is the two joined |
+| **its container, plus its name** | two fields — `location` and `name` in the table above — saying where it LIVES and what it is called, and its own path is the two joined |
 | **read whole** | the record carries its own full path, materialised, in one field |
 | **derived** | the tree builds it as it descends: the parent's path, the delimiter, and this row's segment — a field, defaulting to the record's key |
 
@@ -208,6 +226,32 @@ that keeps off the bottom of its track. All of which the list already handles.
 The per-open-node cost does not vanish. It moves — out of every view and into
 one place where it can be solved once.
 
+### What a mark change costs
+
+Opening a node makes rows appear, which is `Added`, and `openAll` over a large
+subtree makes a great many appear at once. Whether that is one notice or
+thousands looked like a question this design would have to answer. It is two
+questions, and invalidation already answers one of them.
+
+**The order half is answered.** `Added`'s extent names the two records the new
+one fell BETWEEN, and what it costs is the claim across that place — cut, or an
+open one pulled back. A thousand rows appearing under one parent all fall in the
+same place, so they are a thousand notices with one extent, which is the densest
+case of the coalescing rule `live-data-negotiation.md` already states: points
+merge into a range when the gap between them is small against the span they
+cover. A reader loses its claim across that one point and keeps everything
+before and after, whether one row arrived or a thousand.
+
+**The count half is not.** `recount` is `was.Add(1)`, hard, because `Added`
+names no record — the other three reasons carry `len(named)` and scale with it,
+and `Added` has nothing to scale with. So an `openAll` really does cost a
+thousand notices, for arithmetic and for nothing else.
+
+**The fix is a number on `Added`, not a fifth reason.** A count on the notice —
+this many appeared, between these two — is to `Added` exactly what the named
+list is to the other three, and `RecordCount.Add` already takes an `n`. Nothing
+about the four reasons is short of what a tree needs; one field is.
+
 ## Decisions taken
 
 1. A tree is a `Source`, wrapping a source, presenting the visible rows flat.
@@ -220,8 +264,9 @@ one place where it can be solved once.
 4. A child type is a function from record to `Spec`, with constructors.
 5. A record keeps its identity; the PATH is a separate field — its container
    plus its name, read whole, or derived by descending — with a delimiter the
-   caller chooses. Identifying rows by path instead is available for a tree that
-   grafts sources or repeats a record, and is not the default.
+   caller chooses, and field names the caller gives. Identifying rows by path
+   instead is available for a tree that grafts sources or repeats a record, and
+   is not the default.
 6. Deep filtering is eager and is for records in hand.
 7. **Expandability is a field.** A source that knows says so, and one that does
    not leaves it undefined, which reads as a leaf. Over records in hand a tree
@@ -244,18 +289,15 @@ one place where it can be solved once.
 
 ## Open questions
 
-- **What a mark change costs.** Opening a node is `Added` for each row that
-  appeared; `openAll` on a large subtree is a great many. Whether that is one
-  notice about the sequence or one per record is the same question
-  `live-data-negotiation.md` asks about everything else, and the answer should
-  be the same answer.
 - **Cycles.** A child type keyed on a prefix can make a node its own descendant.
   The path is in hand, so refusing to open a node already on its own path is
   cheap — but some file managers deliberately allow it, so whether this is a
   rule or a setting is not settled.
-- **What the path fields are called**, and whether one tree can take a path one
-  way from some rows and another way from others — a graft whose second source
-  says where its rows live under a first that only has edges.
+- **Whether one tree can take a path one way from some rows and another way from
+  others** — a graft whose second source says where its rows live under a first
+  that only has edges. What the fields are CALLED is settled: the caller names
+  them, and `location` and `name` are this document's example rather than a
+  reserved spelling.
 
 ## The risk worth naming
 
