@@ -80,14 +80,26 @@ purpose, and both places should say so.
 A **child type** is a source and a way of deriving a `Spec` from the parent
 record. Most of them are one predicate:
 
-| | |
-|---|---|
-| a field equal to the parent's key | `eq parent <the parent's key>` |
-| a field equal to the parent's path | `eq parent <the parent's path>` |
-| a field beginning with the parent's path | `starts parent <the parent's path>` |
+| | | |
+|---|---|---|
+| its parent by key | `eq parent <the parent's key>` | an adjacency list |
+| its container | `eq path <the parent's own path>` | a row that says where it LIVES |
+| everything under it | `starts path <the parent's own path>` | the subtree, deliberately |
 
 All three are expressible with what a filter already has: `OpEq` and `OpStarts`
 exist. Nothing new is needed to SAY what a child is.
+
+The second is the one to reach for, and it turns on **what a path field holds**.
+A field holding the row's CONTAINER — where it lives, not what it is — makes
+children one equality: every row whose container is this row's own path. A field
+holding the row's own full path does not, because no operator can take the
+parent off the front of it, and the parent's path is not written down anywhere
+to compare against.
+
+So `eq` gives children and `starts` gives descendants, which is the shallow and
+deep distinction expressed in the criterion rather than added beside it. A
+caller wanting the subtree in one question asks for it; one wanting a level asks
+for that.
 
 A type naming the same source as the top level makes a hierarchy nested inside
 one body of records, by those same rules all the way down. A type naming a
@@ -115,16 +127,24 @@ place in a thread is somewhere else entirely. A row's key may be a database
 primary key while what makes it a child is a `parent` column. None of those
 paths are keys and none of those keys are paths.
 
-So the path is a **field**, got one of two ways:
+So the path is a **field**, got one of three ways:
 
 | | |
 |---|---|
-| **read** | the record carries its whole path, materialised, in a field the tree is told to read |
-| **derived** | the tree builds it as it descends: the parent's path, the delimiter, and this row's SEGMENT — a field, defaulting to the record's key |
+| **its container, plus its name** | the record says where it LIVES and what it is called, and its own path is the two joined |
+| **read whole** | the record carries its own full path, materialised, in one field |
+| **derived** | the tree builds it as it descends: the parent's path, the delimiter, and this row's segment — a field, defaulting to the record's key |
 
-The first suits data that already knows where it lives. The second suits an
-adjacency list, where the hierarchy is edges and nothing has written a path
-down.
+**The first is the best of the three**, and not only because it makes children
+one equality. A row's own path can be worked out from the ROW ALONE — its
+container and its name — without having descended to it. So a tree can say where
+a row belongs before it has walked there, which is what a deep filter needs and
+what jumping straight to a node needs.
+
+The second suits data that already knows its whole address. The third suits an
+adjacency list, where the hierarchy is edges and nothing has written a path down
+at all — and there the path is only knowable by descending, which is the cost of
+that shape.
 
 **The delimiter is the caller's to choose.** `/` for something filesystem-like,
 `.` for a namespace, `::`, whatever the data uses — and where the tree DERIVES a
@@ -198,10 +218,10 @@ one place where it can be solved once.
    sets over one spec would disagree about what the sequence contains, and "the
    same three name the same sequence" is load-bearing.
 4. A child type is a function from record to `Spec`, with constructors.
-5. A record keeps its identity; the PATH is a separate field, read or derived,
-   with a delimiter the caller chooses. Identifying rows by path instead is
-   available for a tree that grafts sources or repeats a record, and is not the
-   default.
+5. A record keeps its identity; the PATH is a separate field — its container
+   plus its name, read whole, or derived by descending — with a delimiter the
+   caller chooses. Identifying rows by path instead is available for a tree that
+   grafts sources or repeats a record, and is not the default.
 6. Deep filtering is eager and is for records in hand.
 7. **Expandability is a field.** A source that knows says so, and one that does
    not leaves it undefined, which reads as a leaf. Over records in hand a tree
@@ -233,9 +253,9 @@ one place where it can be solved once.
   The path is in hand, so refusing to open a node already on its own path is
   cheap — but some file managers deliberately allow it, so whether this is a
   rule or a setting is not settled.
-- **What a row's path field is called**, and whether the same tree can read a
-  path from some rows and derive it for others — a graft whose second source
-  materialises paths under a first that does not.
+- **What the path fields are called**, and whether one tree can take a path one
+  way from some rows and another way from others — a graft whose second source
+  says where its rows live under a first that only has edges.
 
 ## The risk worth naming
 
