@@ -229,9 +229,12 @@ type Complete struct {
 	// believing a number that was not sent. An answer that carried no records
 	// has no first record and says Unknown for that reason alone.
 	//
-	// Exact where the position is the position, and a floor where it was
-	// reckoned -- the same vocabulary Total uses, because a sum of positions
-	// degrades exactly as a sum of counts does.
+	// **Exactly or Unknown, and never a floor.** A count can honestly be a
+	// floor -- part of a sequence seen is at least that many -- but a position
+	// cannot be reckoned the same way: a source either resolved where it began
+	// or it did not, and "at least the six hundredth" is not something a reader
+	// can put a thumb on. It shares Total's type for the vocabulary, not for
+	// the middle value.
 	First RecordCount
 
 	// Error is a refusal, which is an answer: this scope cannot be produced,
