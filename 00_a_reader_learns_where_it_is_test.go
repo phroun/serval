@@ -325,7 +325,9 @@ func TestTheLoopStopsAgainstASourceThatCannotSeek(t *testing.T) {
 // either, so it says where it really began.
 func TestAnAmendedSourceSaysWhereItActuallyStarted(t *testing.T) {
 	a := NewAmendedSource(numbered(100))
-	a.Replace(NewInt(3), Record{Named("n", "replaced")})
+	// An ADDITION, which moves every position after it, so a position cannot be
+	// handed down and this source starts where it would have started anyway.
+	a.Add(NewText("zzz"), Record{Named("n", "mine")})
 	set, err := a.Open(&Spec{})
 	if err != nil {
 		t.Fatal(err)

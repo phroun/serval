@@ -262,3 +262,62 @@ func TestWalkingBackFromTheFirstRecordGoesNowhere(t *testing.T) {
 			back.done.First)
 	}
 }
+
+// A position can be handed down to a child where this source holds nothing of
+// its own: the sequence IS the child's, so `from` means the same thing to both
+// and where it began is the child's to say.
+//
+// That is the case a list reading its own items is in, and it is the reason this
+// is worth having.
+func TestAPositionGoesDownToAnUnamendedChild(t *testing.T) {
+	a := NewAmendedSource(numbered(500))
+	set, err := a.Open(&Spec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer set.Close()
+
+	got := placeRead(t, set, &Scope{From: 300, Count: 5})
+	if len(got.keys) == 0 {
+		t.Fatalf("it carried nothing: %q", got.done.Error)
+	}
+	if got.keys[0] != 300 {
+		t.Errorf("it began with record %d, want 300", got.keys[0])
+	}
+	if !got.done.First.Exact || got.done.First.N != 300 {
+		t.Errorf("it reported First %v, want exactly 300", got.done.First)
+	}
+}
+
+// Anything held stops it, a replacement included -- and the reason is not that a
+// replacement moves a record. It is that this source positions its own records
+// against the record a scope resumed past, and a scope naming a PLACE names no
+// record to position against: the replacement would go out ahead of the child's
+// first record, and the answer would begin somewhere it said it did not.
+func TestAnythingHeldStopsAPositionGoingDown(t *testing.T) {
+	for _, c := range []struct {
+		what string
+		do   func(*AmendedSource)
+	}{
+		{"a replacement", func(a *AmendedSource) { a.Replace(NewInt(7), Record{Named("n", "x")}) }},
+		{"an addition", func(a *AmendedSource) { a.Add(NewText("zzz"), Record{Named("n", "x")}) }},
+		{"a deletion", func(a *AmendedSource) { a.Delete(NewInt(9), nil) }},
+	} {
+		a := NewAmendedSource(numbered(500))
+		c.do(a)
+		set, err := a.Open(&Spec{})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		got := placeRead(t, set, &Scope{From: 300, Count: 5})
+		if len(got.keys) == 0 {
+			set.Close()
+			t.Fatalf("%s: it carried nothing: %q", c.what, got.done.Error)
+		}
+		if !got.done.First.Exact || got.done.First.N != 0 {
+			t.Errorf("%s: it reported First %v, want exactly 0", c.what, got.done.First)
+		}
+		set.Close()
+	}
+}

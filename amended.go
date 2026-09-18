@@ -234,6 +234,30 @@ func (a *AmendedSource) clash(key *Value) {
 	a.notes.ranksGone()
 }
 
+// amends reports whether this source holds anything of its own at all.
+//
+// It is what decides whether a POSITION can be handed down to the child. With
+// nothing held, this sequence IS the child's: position n is position n, `from`
+// means the same thing to both, and the child's word on where it began is this
+// source's word too. That is the case a list reading its own items is in, and it
+// is worth having exactly because it is so common.
+//
+// **With anything held, no.** Not because a replacement moves a record -- it
+// does not, standing in for one of the child's under the same key and in the
+// same place -- but because this source positions its OWN records against the
+// record the scope resumed past, and a scope naming a place names no record to
+// position against. Its own cursor would start at the beginning of its own
+// order, and a replacement sorting before the place asked for would go out ahead
+// of the child's first record: an answer beginning somewhere it said it did not.
+//
+// So the rule is the conservative one until the merge can place its own records
+// against a position, which is a separate piece of work and not this one.
+func (a *AmendedSource) amends() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.amend) > 0
+}
+
 // lookup is the amendment against one key, and nil where there is none.
 func (a *AmendedSource) lookup(key *Value) *amendment {
 	a.mu.Lock()
@@ -383,10 +407,29 @@ func (s *amendedSet) Read(sc *Scope, out Sink) error {
 		}
 	}
 
+	// A position goes down only where nothing here moves one. Where something
+	// does, the child is not shown a figure that would mean a different place in
+	// its sequence than it means in this one.
+	asked := sc
+	pass := sc.From != 0 && !s.src.amends()
+	if sc.From != 0 && !pass {
+		stripped := *sc
+		stripped.From = 0
+		asked = &stripped
+	}
+
 	m := &merge{
-		set: s, want: sc, out: out, at: at,
+		set: s, want: asked, out: out, at: at,
 		levels: s.levels, childAt: from, step: 1,
-		begin: startFrom(sc, s.placed, s.RecordCount()),
+		begin: startFrom(asked, s.placed, s.RecordCount()),
+	}
+	if pass {
+		// Where it began is the CHILD's to say, and it says so at the end. So
+		// nothing is ranked this round, rather than ranked from a figure guessed
+		// before the answer arrived -- and the reader is told the truth once the
+		// child has told it.
+		m.begin = Unknown()
+		m.passed = true
 	}
 	if sc.Reversed {
 		m.step = -1
@@ -433,7 +476,13 @@ type merge struct {
 
 	// begin is where this answer starts in the sequence, worked out once
 	// before any record goes out, and what every record's rank counts from.
-	begin       RecordCount
+	begin RecordCount
+
+	// passed says a position was handed to the child, so where the answer began
+	// is the child's to report and this source repeats it. childFirst is what it
+	// reported.
+	passed      bool
+	childFirst  RecordCount
 	last        *Value // the identity of the last record that went out
 	joined      bool   // the walk reached the record the asker already held
 	done        bool
@@ -602,6 +651,9 @@ func (m *merge) Done(c Complete) {
 	if m.done {
 		return
 	}
+	if m.passed && c.First.Exact {
+		m.childFirst = c.First
+	}
 	if c.Stop == StopJoined {
 		// The asker holds the record the walk stopped at and everything past
 		// it -- ours included, since ours crossed the same way. So nothing
@@ -652,6 +704,11 @@ func (m *merge) Done(c Complete) {
 	}
 	if m.sent > 0 {
 		out.First = m.begin
+		if m.passed {
+			// The child was given the position and is the one that knows where it
+			// landed. Nothing here moved a record, so its answer is ours.
+			out.First = m.childFirst
+		}
 	}
 	m.out.Done(out)
 }
