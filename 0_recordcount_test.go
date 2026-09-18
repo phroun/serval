@@ -350,9 +350,28 @@ type sayingSet struct {
 	child DataSet
 }
 
-func (s *sayingSet) Close()                         { s.child.Close() }
-func (s *sayingSet) Read(sc *Scope, out Sink) error { return s.child.Read(sc, out) }
-func (s *sayingSet) RecordCount() RecordCount       { return s.src.count }
+func (s *sayingSet) Close()                   { s.child.Close() }
+func (s *sayingSet) RecordCount() RecordCount { return s.src.count }
+
+// Read strips the figure off the ANSWER as well as off the question.
+//
+// A source that will not count is one that will not count either way round:
+// Total rides a completion precisely so that a source able to count says so on
+// an answer it was sending anyway, so muting RecordCount alone would leave the
+// figure crossing by the other road and this would be testing nothing.
+func (s *sayingSet) Read(sc *Scope, out Sink) error {
+	return s.child.Read(sc, &sayingSink{Sink: out, count: s.src.count})
+}
+
+type sayingSink struct {
+	Sink
+	count RecordCount
+}
+
+func (k *sayingSink) Done(c Complete) {
+	c.Total = k.count
+	k.Sink.Done(c)
+}
 
 // An exact figure always stands over a floor, whichever way round the numbers
 // fall. A floor is a claim that there are AT LEAST this many, so a higher one

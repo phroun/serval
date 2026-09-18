@@ -292,7 +292,11 @@ func (v *listDataSet) Read(s *Scope, out Sink) error {
 	// Said before the records, which is where it can be acted on.
 	out.Ordered()
 
-	done := Complete{}
+	// How long the sequence is, volunteered rather than waited for. This source
+	// ordered its records when the sequence was stated, so the figure is already
+	// in hand and costs nothing to say -- and beside First it is what a reader
+	// needs to draw a scrollbar over records it has never seen.
+	done := Complete{Total: Exactly(len(o.rows))}
 	last := s.After
 	sent := 0
 	for ; i >= 0 && i < len(o.rows); i += step {
