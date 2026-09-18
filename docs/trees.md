@@ -1,10 +1,12 @@
 # A tree as a source
 
-> **Status: conversation. Nothing here is built.** This is a design reached by
-> talking it through, written down so it is not lost, and it is not a contract.
-> Where it states a decision, that is a decision taken in conversation and
-> nothing more. `sources.md` is what a source is today and `ordering.md` is the
-> comparison rules; both of those are built and this leans on them.
+> **Status: being built.** `marks.go` is the expansion, `treepath.go` is
+> `Standing` — the three readings — and `treechild.go` is `ChildType` and its
+> criteria. `TreeSource` itself is not written yet, so the sections about
+> flattening, counting and scopes are still conversation. Where building changed
+> a decision, it says so and the decision has been rewritten rather than
+> annotated. `sources.md` is what a source is, `ordering.md` is the comparison
+> rules, and `census.md` is what decision 7 leans on.
 
 A tree is a sequence. That is the whole of the idea, and everything else follows
 from taking it seriously.
@@ -49,8 +51,9 @@ above built again, per view, and gets none of the caching.
 
 Expanding everything must not mean iterating everything. It is a STATE.
 
-A node's effective state is the nearest mark at or above it, and the root
-default is closed. Three marks:
+A node's effective state is the nearest mark at or above it. A node nobody has
+spoken about is closed; the ROOT is the exception and shows its children, because
+a tree's top level is visible without anybody having said so. Three marks:
 
 | | |
 |---|---|
@@ -68,6 +71,15 @@ exception to a state that no longer applies.
 one.** Opening a node inside an `openAll` region is not "add an open mark", it
 is "drop the closed mark" — and the inherited `openAll` resumes beneath it.
 
+Building that found it is not `state == inherited`, which is how this was first
+written. `open` is not `openAll`, so an exact comparison keeps a mark exactly
+where the rule says to drop one. What is being asked is whether the inherited
+state ALREADY DOES what is being asked for, and an `openAll` already does what an
+`open` asks. Its consequence is real and is named rather than hidden: *open
+exactly one level, inside an `openAll` region* is a state the verb cannot
+express, because it is spent saying the thing above — which is wanted constantly,
+where this has not been wanted at all.
+
 So what is held is bounded by what somebody has TOUCHED since the enclosing
 change, not by the size of the tree. Expanding a million rows is one mark.
 
@@ -84,10 +96,17 @@ record. Most of them are one predicate:
 |---|---|---|
 | its parent by key | `eq parent <the parent's key>` | an adjacency list |
 | its container | `eq location <the parent's own path>` | a row that says where it LIVES |
-| everything under it | `starts location <the parent's own path, and a delimiter>` | the subtree, deliberately |
+| everything under it | that, **or** `starts location <that path, and a delimiter>` | the subtree, deliberately |
 
-All three are expressible with what a filter already has: `OpEq` and `OpStarts`
-exist. Nothing new is needed to SAY what a child is.
+All three are expressible with what a filter already has: `OpEq`, `OpStarts` and
+`OpOr` exist. Nothing new is needed to SAY what a child is.
+
+**The third is two predicates and not one**, which is not what it looks like and
+is what building it found. A direct child's location is the parent's path
+EXACTLY, with no delimiter after it — so a prefix test with the delimiter on
+misses every child and catches only what is deeper, while one without it drags
+`/usr/locally` into `/usr/local`. Descendants are the two halves together, each
+doing exactly the job it was described as doing.
 
 The second is the one to reach for, and it turns on **what the field holds**.
 The name here is `location` rather than `path` on purpose, because `path` is the
@@ -108,10 +127,12 @@ Something filesystem-shaped, two fields, nothing derived:
 | `/usr/local` | `share` | `/usr/local/share` |
 
 The children of `/usr/local` are `eq location "/usr/local"` — the two rows, one
-equality, no depth field and no prefix arithmetic. So `eq` gives children and
-`starts` gives descendants, which is the shallow and deep distinction expressed
-in the criterion rather than added beside it. A caller wanting the subtree in one
-question asks for it; one wanting a level asks for that.
+equality, no depth field and no prefix arithmetic. Everything beneath it is that
+same predicate **or** `starts location "/usr/local/"`, the first half being the
+children and the second everything below them. So the shallow and deep
+distinction is expressed in the criterion rather than added beside it: a caller
+wanting the subtree in one question asks for it, one wanting a level asks for
+that, and the deep one is the shallow one with a second half.
 
 The field is called whatever the data calls it — `directory`, `container`,
 `folder`, `thread` — and the tree is told which name it is. `location` is this
@@ -129,13 +150,18 @@ and `local` join as `/usr/local` as well, and the root spelled `/` does not
 produce `//usr`. One rule reads both conventions, so nothing has to be declared.
 
 **The prefix question is where it bites, and the tree appends the delimiter
-itself.** Descendants of `/usr/local` are `starts location "/usr/local/"` and
-NOT `starts location "/usr/local"`, because the second also matches
-`/usr/locally` — a sibling whose name begins with the same letters, dragged into
-a subtree it has nothing to do with. The delimiter is what makes a prefix a
-boundary instead of a spelling, and since the data may not have written one,
-appending it is the tree's job. Equality needs no such care: `eq` compares the
-whole of the field, so the path as the data spells it is right as it stands.
+itself.** The deep half of the descendants criterion is `starts location
+"/usr/local/"` and NOT `starts location "/usr/local"`, because the second also
+matches `/usr/locally` — a sibling whose name begins with the same letters,
+dragged into a subtree it has nothing to do with. The delimiter is what makes a
+prefix a boundary instead of a spelling, and since the data may not have written
+one, appending it is the tree's job.
+
+That appended delimiter is also exactly why the criterion needs its other half:
+a direct child's location ends where the parent's path ends, so the bounded
+prefix excludes every one of them. Equality needs no such care — `eq` compares
+the whole of the field, so the path as the data spells it is right as it stands —
+which is what makes the children's predicate reusable as the first half.
 
 A type naming the same source as the top level makes a hierarchy nested inside
 one body of records, by those same rules all the way down. A type naming a
@@ -470,7 +496,10 @@ same eagerness, carrying the same warning, and no new one.
    instead is available for a tree that grafts sources or repeats a record, and
    is not the default. **No trailing delimiter is assumed**: joining does not
    double one already there, and the prefix question has the tree append one,
-   because `starts location "/usr/local"` would drag in `/usr/locally`.
+   because `starts location "/usr/local"` would drag in `/usr/locally` — and
+   descendants are consequently TWO predicates, the children's equality or that
+   bounded prefix, a direct child's location ending exactly where the parent's
+   path ends.
    **And a path is optional entirely** — an adjacency list of `id` and `parent`
    is a tree with no delimiter, no address field and no string built anywhere.
    **The reading belongs to the CHILD TYPE**, because a child type names a source
