@@ -235,10 +235,19 @@ func (v *listDataSet) RecordCount() RecordCount {
 // what put a record where it was were that record's own values, and they went
 // with it -- and guessing would hand back a run from somewhere the asker did
 // not ask about, with nothing to mark it as the wrong place.
+//
+// A `from` is honoured EXACTLY, the ordering being a slice: the position asked
+// for is where the walk begins, clamped to the sequence's ends. This source
+// never has to estimate, so the First it reports is always exact.
 func (v *listDataSet) Read(s *Scope, out Sink) error {
 	o := v.ord
 	if o == nil {
 		return fmt.Errorf("this data set has been closed")
+	}
+
+	if err := bothEnds(s); err != nil {
+		out.Done(Complete{Error: err.Error()})
+		return nil
 	}
 
 	step := 1
@@ -256,6 +265,18 @@ func (v *listDataSet) Read(s *Scope, out Sink) error {
 			return nil
 		}
 		i = at + step
+	} else if s.From != 0 {
+		// The position is a place in the SEQUENCE, which is the order Total and
+		// First are both counted in, and not a place in the walk. So a reversed
+		// scope starting from a position starts at that record and walks back
+		// from it, rather than that far in from the end.
+		i = s.From
+		if i < 0 {
+			i = 0
+		}
+		if i >= len(o.rows) {
+			i = len(o.rows) - 1
+		}
 	}
 
 	// An `until` this sequence does not hold is not a refusal. It only says
@@ -284,6 +305,12 @@ func (v *listDataSet) Read(s *Scope, out Sink) error {
 		if sent >= s.Count {
 			done.Stop = StopFilled
 			break
+		}
+		if sent == 0 {
+			// Where the answer began, said of the record that actually goes out
+			// rather than of the place the walk was aimed at -- a scope that
+			// ends before its first record began nowhere and says nothing.
+			done.First = Exactly(i)
 		}
 		rec := v.src.rows[o.rows[i]]
 		bag, has, whole := v.fields(rec)

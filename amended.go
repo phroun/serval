@@ -350,6 +350,11 @@ func (s *amendedSet) Read(sc *Scope, out Sink) error {
 		sc = &Scope{}
 	}
 
+	if err := bothEnds(sc); err != nil {
+		out.Done(Complete{Error: err.Error()})
+		return nil
+	}
+
 	var at []*Value
 	if sc.After != nil {
 		t, ok := s.placed.get(sc.After)
@@ -634,6 +639,7 @@ func (m *merge) Done(c Complete) {
 			out.Watermark = m.want.After
 		}
 	}
+	out.First = startedAt(m.want, m.sent)
 	m.out.Done(out)
 }
 

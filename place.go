@@ -21,6 +21,7 @@ package serval
 // reader that walks a million records should not leave a million notes behind.
 
 import (
+	"fmt"
 	"sync"
 )
 
@@ -181,4 +182,42 @@ func (b *placebook) all() []*book {
 		out = append(out, held)
 	}
 	return out
+}
+
+// startedAt is where an answer began, for a source that does not hold its own
+// records and so does not honour From: it begins at the start of the sequence
+// whatever position was asked for, or carries on from a record it noted.
+//
+// The START is position zero whoever is answering, and that much it can say
+// exactly. **Saying it is the point.** A reader that asked to begin at six
+// hundred and is told it began at nought knows it did not get there -- where the
+// same reader told NOTHING by a source that had quietly started at the top would
+// paint the first rows of the sequence as though they were the six hundredth. An
+// unhonoured From has to be visible in the answer, and this is where it is.
+//
+// That is also what makes the reader's loop self-limiting. Ask a different
+// place, get the same answer back, and the source has said it cannot seek. The
+// reader stops, and nobody negotiated a capability to find out.
+//
+// A resume from a note is somewhere this source cannot number, so that is
+// Unknown until the note carries its position.
+func startedAt(s *Scope, sent int) RecordCount {
+	if sent == 0 {
+		return Unknown() // no first record, so no position to report
+	}
+	if s == nil || s.After == nil {
+		return Exactly(0)
+	}
+	return Unknown()
+}
+
+// bothEnds refuses a scope that says where to start twice over. A record is not
+// a position: one names a place in a sequence and the other names a thing, and
+// a scope carrying both has a bug that only ever shows here.
+func bothEnds(s *Scope) error {
+	if s != nil && s.After != nil && s.From != 0 {
+		return fmt.Errorf("a scope says where to start with after or with from," +
+			" not both: a record is not a position")
+	}
+	return nil
 }

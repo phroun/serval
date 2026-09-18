@@ -153,6 +153,29 @@ type Scope struct {
 	// Count is how many records are wanted.
 	Count int
 
+	// From is a position to start NEAR, for a reader that has a place in mind
+	// rather than a record: a scroll thumb dragged to the middle of a long
+	// sequence knows how far down it is and knows no identity there at all.
+	//
+	// **Best effort, and never a promise.** A source honours it as well as it
+	// can and says where it actually started in Complete.First, which is the
+	// truth whatever From asked for. One that holds its records lands exactly;
+	// one built on others estimates and may be well out; one that cannot place
+	// a position at all starts at the beginning and says so. So a reader that
+	// means a particular place asks, reads First, and asks again from what it
+	// learned -- which converges, and needs no source to promise anything.
+	//
+	// It is not a lie about identities. After and Until stay what they always
+	// were, and this says something weaker in its own words rather than
+	// dressing a position up as one of them.
+	//
+	// Zero is the beginning, which is where a scope starts anyway, so an unset
+	// From asks for nothing. After WINS over it: a reader holding the record it
+	// wants to carry on past knows something better than a position, and a
+	// scope naming both a record and a place is refused rather than quietly
+	// answered from one of them.
+	From int
+
 	// Reversed walks the sequence from its end rather than its beginning.
 	//
 	// Every level turns over, the one the sort does not write included: an
@@ -189,6 +212,27 @@ type Complete struct {
 	// sequence rather than this scope of it, how many came back being something
 	// whoever asked can count.
 	Total RecordCount
+
+	// First is where in the sequence the answer actually started: the position
+	// of the first record it carried, counted in the sequence's own order
+	// however the scope walked it.
+	//
+	// It is the calibration, and it is nearly free wherever it is possible at
+	// all -- a source that resolved a start knows what it resolved. A reader
+	// that asked After some record it holds learns where that record stands
+	// without a question of its own; a reader that asked From a position learns
+	// whether it got there. Beside Total, the two say how long the sequence is
+	// and where in it this answer sits, which between them are a scroll thumb.
+	//
+	// **Unknown is an answer and is never inferred.** A source that cannot say
+	// says nothing, and a reader told nothing stays where it was rather than
+	// believing a number that was not sent. An answer that carried no records
+	// has no first record and says Unknown for that reason alone.
+	//
+	// Exact where the position is the position, and a floor where it was
+	// reckoned -- the same vocabulary Total uses, because a sum of positions
+	// degrades exactly as a sum of counts does.
+	First RecordCount
 
 	// Error is a refusal, which is an answer: this scope cannot be produced,
 	// the records are gone, whatever held them is no longer reachable.

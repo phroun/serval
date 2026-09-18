@@ -610,6 +610,11 @@ func (s *composedSet) Read(sc *Scope, out Sink) error {
 		sc = &Scope{}
 	}
 
+	if err := bothEnds(sc); err != nil {
+		out.Done(Complete{Error: err.Error()})
+		return nil
+	}
+
 	after, err := s.resume(sc.After)
 	if err != nil {
 		out.Done(Complete{Error: err.Error()})
@@ -1053,5 +1058,6 @@ func (g *gathering) close() {
 			out.Watermark = lowestID
 		}
 	}
+	out.First = startedAt(g.want, g.sent)
 	g.out.Done(out)
 }
