@@ -118,6 +118,7 @@ func (a *AmendedSource) Replace(key *Value, fields Record) {
 	a.amend[Key(key)] = &amendment{key: key, fields: fields}
 	a.gen++
 	a.mu.Unlock()
+	a.notes.ranksGone()
 }
 
 // Add says this source holds a record of its own under this key.
@@ -135,6 +136,7 @@ func (a *AmendedSource) Add(key *Value, fields Record) {
 	a.amend[Key(key)] = &amendment{key: key, fields: fields, added: true}
 	a.gen++
 	a.mu.Unlock()
+	a.notes.ranksGone()
 }
 
 // Delete says a record is gone.
@@ -151,6 +153,7 @@ func (a *AmendedSource) Delete(key *Value, known Record) {
 	a.amend[Key(key)] = &amendment{key: key, deleted: true, seen: known}
 	a.gen++
 	a.mu.Unlock()
+	a.notes.ranksGone()
 }
 
 // Forget drops an amendment, leaving the child's own record to stand.
@@ -162,6 +165,7 @@ func (a *AmendedSource) Forget(key *Value) {
 	delete(a.amend, Key(key))
 	a.gen++
 	a.mu.Unlock()
+	a.notes.ranksGone()
 }
 
 // learn writes down the child's own version of a record this source amends,
@@ -214,6 +218,7 @@ func (a *AmendedSource) Stale(key *Value) {
 		a.gen++
 	}
 	a.mu.Unlock()
+	a.notes.ranksGone()
 }
 
 // clash writes down that an addition's key is the child's after all, which is
@@ -226,6 +231,7 @@ func (a *AmendedSource) clash(key *Value) {
 		a.gen++
 	}
 	a.mu.Unlock()
+	a.notes.ranksGone()
 }
 
 // lookup is the amendment against one key, and nil where there is none.
@@ -380,6 +386,7 @@ func (s *amendedSet) Read(sc *Scope, out Sink) error {
 	m := &merge{
 		set: s, want: sc, out: out, at: at,
 		levels: s.levels, childAt: from, step: 1,
+		begin: startFrom(sc, s.placed, s.RecordCount()),
 	}
 	if sc.Reversed {
 		m.step = -1
@@ -421,8 +428,12 @@ type merge struct {
 	gone    map[string]bool // additions of ours that have already crossed
 	dropped map[string]bool // additions whose key turned out to be the child's
 
-	sent        int
-	round       int
+	sent  int
+	round int
+
+	// begin is where this answer starts in the sequence, worked out once
+	// before any record goes out, and what every record's rank counts from.
+	begin       RecordCount
 	last        *Value // the identity of the last record that went out
 	joined      bool   // the walk reached the record the asker already held
 	done        bool
@@ -639,7 +650,9 @@ func (m *merge) Done(c Complete) {
 			out.Watermark = m.want.After
 		}
 	}
-	out.First = startedAt(m.want, m.sent)
+	if m.sent > 0 {
+		out.First = m.begin
+	}
 	m.out.Done(out)
 }
 
@@ -686,6 +699,9 @@ func (m *merge) emit(key *Value, fields Record, has Totals, whole bool) error {
 	// identity that is not its.
 	m.set.placed.put(key, recordTuple(key, fields, m.set.spec.Sort))
 	m.set.resume.put(key, []*Value{m.childAt})
+	if at, ok := rankAt(m.begin, m.want.Reversed, m.sent-1); ok {
+		m.set.placed.putRank(key, at)
+	}
 	if whole {
 		return m.out.Record(key, fields)
 	}

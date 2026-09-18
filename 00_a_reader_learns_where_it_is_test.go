@@ -26,14 +26,20 @@ func numbered(n int) *ListSource {
 // took is the keys an answer carried, and what ended it.
 type took struct {
 	keys  []int64
+	ids   []*Value
 	done  Complete
 	order bool
 }
 
-func (t *took) Ordered()                         { t.order = true }
-func (t *took) Record(id *Value, f Record) error { t.keys = append(t.keys, id.Int); return nil }
+func (t *took) Ordered() { t.order = true }
+func (t *took) Record(id *Value, f Record) error {
+	t.keys = append(t.keys, id.Int)
+	t.ids = append(t.ids, id)
+	return nil
+}
 func (t *took) Subset(id *Value, f Record, _ Totals) error {
 	t.keys = append(t.keys, id.Int)
+	t.ids = append(t.ids, id)
 	return nil
 }
 func (t *took) Done(c Complete) { t.done = c }
@@ -370,26 +376,20 @@ func TestAWrapperDoesNotClaimAPlaceItDoesNotKnow(t *testing.T) {
 		t.Errorf("an empty answer claimed to begin at %v", empty.done.First)
 	}
 
-	// A RESUME is somewhere this source cannot number. It carried on from a
-	// record it had noted, and where that record stands is exactly what it does
-	// not know -- so it says nothing, rather than the one number that would be
-	// read as the top of the sequence.
-	first := &took{}
-	if err := set.Read(&Scope{Count: 5}, first); err != nil {
+	// And a resume from a record this source never ranked is nowhere it can
+	// name. It has a note of where its includes stood -- enough to carry on --
+	// and no idea how many records came before.
+	stray := &took{}
+	if err := set.Read(&Scope{Count: 3}, stray); err != nil {
 		t.Fatal(err)
 	}
-	if first.done.Watermark == nil {
-		t.Fatal("it gave nothing to carry on from")
-	}
-	next := &took{}
-	if err := set.Read(&Scope{After: first.done.Watermark, Count: 5}, next); err != nil {
+	c.Stale(stray.done.Watermark) // which drops the rank and keeps the note
+	after := &took{}
+	if err := set.Read(&Scope{After: stray.done.Watermark, Count: 3}, after); err != nil {
 		t.Fatal(err)
 	}
-	if len(next.keys) == 0 {
-		t.Fatalf("the resume carried nothing: %q", next.done.Error)
-	}
-	if next.done.First.Exact {
-		t.Errorf("a resume from a note claimed to begin at %v, and it cannot know",
-			next.done.First)
+	if after.done.First.Exact {
+		t.Errorf("a resume from an unranked record claimed to begin at %v",
+			after.done.First)
 	}
 }

@@ -39,10 +39,22 @@ type places struct {
 	mu   sync.Mutex
 	at   map[string][]*Value
 	seen []string
+
+	// rank is where a record STOOD IN THE SEQUENCE, for the notes that carry
+	// one: a count of the records before it rather than a description of it.
+	//
+	// **It is far more perishable than the tuple beside it, and not for the
+	// same reasons.** A tuple is that record's own values and stops being true
+	// only when that record moves. A rank counts everybody in front, so a
+	// record added or removed ANYWHERE earlier in the sequence makes it wrong
+	// -- about a record that has not itself moved at all. So every rank goes
+	// whenever this source is told anything at all has changed, while the
+	// tuples go one at a time. See forgetRanks.
+	rank map[string]int
 }
 
 func newPlaces() *places {
-	return &places{at: map[string][]*Value{}}
+	return &places{at: map[string][]*Value{}, rank: map[string]int{}}
 }
 
 // put notes where a record stood. Noting the same record twice moves it to the
@@ -63,6 +75,7 @@ func (p *places) put(id *Value, tuple []*Value) {
 		old := p.seen[0]
 		p.seen = p.seen[1:]
 		delete(p.at, old)
+		delete(p.rank, old)
 	}
 }
 
@@ -86,6 +99,11 @@ func (p *places) get(id *Value) ([]*Value, bool) {
 // it last spoke about that record, so a scope resuming from one it has not got
 // is refused rather than answered wrongly -- which is what makes forgetting the
 // safe half of this, and worth doing generously.
+//
+// It says nothing about RANKS, and there is no per-record way to. A rank counts
+// the records in front of one, so anything that would make this note wrong has
+// already made every rank after it wrong too -- which is why forgetRanks takes
+// the lot and is called before any of this.
 func (p *places) forget(k string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -220,4 +238,119 @@ func bothEnds(s *Scope) error {
 			" not both: a record is not a position")
 	}
 	return nil
+}
+
+// putRank notes where a record stood in the sequence. Only a source that KNOWS
+// calls this: a rank reckoned from a start that was itself a guess would be a
+// guess wearing an exact answer's clothes.
+func (p *places) putRank(id *Value, n int) {
+	if id == nil || n < 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.rank[Key(id)] = n
+}
+
+// rankOf is where a record stood, and false for one this source has not ranked
+// -- which it has not if it never sent the record, sent it before it knew where
+// it was, sent it so long ago the note has gone, or has since been told
+// something changed.
+func (p *places) rankOf(id *Value) (int, bool) {
+	if id == nil {
+		return 0, false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n, ok := p.rank[Key(id)]
+	return n, ok
+}
+
+// forgetRanks drops every rank and keeps every tuple.
+//
+// That asymmetry is the whole point. Being told a record may have moved says
+// nothing about where any OTHER record's values put it, so the tuples stand. But
+// a rank is a count of the records in front, and one record added or taken away
+// anywhere earlier moves every rank after it -- so there is no such thing as
+// forgetting the ranks that were affected. Either nothing has changed or they
+// are all suspect, and a source told something changed drops the lot.
+//
+// The cost of that is a reader that has to learn where it is again, which it
+// does from the next answer it reads. The cost of the alternative is a reader
+// told exactly the wrong place with nothing marking it wrong.
+func (p *places) forgetRanks() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.rank = map[string]int{}
+}
+
+// ranksGone drops every rank this source holds, over every sequence.
+func (b *placebook) ranksGone() {
+	b.mu.Lock()
+	held := make([]*book, 0, len(b.books))
+	for _, k := range b.books {
+		held = append(held, k)
+	}
+	b.mu.Unlock()
+	for _, k := range held {
+		for _, p := range k.places {
+			p.forgetRanks()
+		}
+	}
+}
+
+// startFrom is where a wrapping source's answer begins: the position, in the
+// sequence's own order, of the first record it will hand on.
+//
+// Three things it can be. A scope naming no record starts at the sequence's
+// first record, which is position zero -- or, walking backwards, at its last,
+// which needs an exact Total to name. A scope resuming from a record starts one
+// place past it, or one place before it walking backwards, and only where that
+// record's rank is still known.
+//
+// From does not enter into it. A source that cannot place a position does not
+// honour one, so it starts where it would have started anyway, and saying so is
+// how the reader finds out.
+func startFrom(s *Scope, ranks *places, total RecordCount) RecordCount {
+	if s == nil || s.After == nil {
+		if s == nil || !s.Reversed {
+			return Exactly(0)
+		}
+		if total.Exact && total.N > 0 {
+			return Exactly(total.N - 1)
+		}
+		return Unknown()
+	}
+	at, ok := ranks.rankOf(s.After)
+	if !ok {
+		return Unknown()
+	}
+	if s.Reversed {
+		if at == 0 {
+			// One before the first is nowhere. No test kills this, and none
+			// can: a walk back from position zero hands on no records, so the
+			// answer reports no First at all and the figure never escapes. It
+			// says here what is meant, at the point where it means it, rather
+			// than leaving a negative position to be caught further down.
+			return Unknown()
+		}
+		return Exactly(at - 1)
+	}
+	return Exactly(at + 1)
+}
+
+// rankAt is the position of the nth record of an answer that began at start,
+// and false where the start was never known. Forward the positions climb and
+// reversed they fall, the walk being the only thing that differs.
+func rankAt(start RecordCount, reversed bool, nth int) (int, bool) {
+	if !start.Exact {
+		return 0, false
+	}
+	if reversed {
+		if start.N-nth < 0 {
+			return 0, false
+		}
+		return start.N - nth, true
+	}
+	return start.N + nth, true
 }

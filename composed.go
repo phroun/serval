@@ -109,6 +109,11 @@ func (c *ComposedSource) Stale(key *Value) {
 	if key == nil {
 		return // nothing named is nothing to forget, and no note is keyed to it
 	}
+	// EVERY rank goes, not only this record's. A rank counts the records in
+	// front, so one record moving carries every rank after it along with it --
+	// and which records those are is exactly what is no longer known.
+	c.notes.ranksGone()
+
 	gone := Key(key)
 	for _, held := range c.notes.all() {
 		if len(held.places) < 2 {
@@ -622,6 +627,7 @@ func (s *composedSet) Read(sc *Scope, out Sink) error {
 	}
 
 	g := &gathering{set: s, want: sc, out: out, levels: s.levels}
+	g.begin = startFrom(sc, s.placed, s.RecordCount())
 	if sc.Reversed {
 		g.levels = Reverse(s.levels)
 	}
@@ -719,7 +725,12 @@ type gathering struct {
 	sent    int      // records handed on
 	last    []*Value // where the last of them sat
 	lastID  *Value   // and what it is called here
-	ended   bool
+
+	// begin is where this answer starts in the sequence, worked out once
+	// before any record goes out. Exact where it is known at all, and what
+	// every record's own rank is then counted from.
+	begin RecordCount
+	ended bool
 }
 
 // arrivals is what one include has delivered and not yet handed on.
@@ -956,6 +967,9 @@ func (g *gathering) hand(from int, rec waiting) {
 	}
 	g.set.placed.put(rec.key, where)
 	g.set.stood.put(rec.key, rec.tuple)
+	if at, ok := rankAt(g.begin, g.want.Reversed, g.sent-1); ok {
+		g.set.placed.putRank(rec.key, at)
+	}
 
 	if rec.whole {
 		_ = g.out.Record(rec.key, rec.fields)
@@ -1058,6 +1072,8 @@ func (g *gathering) close() {
 			out.Watermark = lowestID
 		}
 	}
-	out.First = startedAt(g.want, g.sent)
+	if g.sent > 0 {
+		out.First = g.begin
+	}
 	g.out.Done(out)
 }
