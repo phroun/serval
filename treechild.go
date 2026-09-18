@@ -47,14 +47,60 @@ type ChildType struct {
 	// source, which is the nested case: a hierarchy inside one body of records.
 	Source Source
 
-	// Children is the question -- a Spec naming this parent's children. Nil
-	// makes every node of this type a leaf, which is a legitimate type for a
-	// row to name and is how a tree says "nothing hangs off this kind".
-	Children func(of Node) *Spec
+	// Children is the question. The zero Criterion makes every node of this
+	// type a leaf, which is a legitimate type for a row to name and is how a
+	// tree says "nothing hangs off this kind".
+	Children Criterion
 
 	// Standing is how a row of that source says where it stands, and it belongs
 	// here rather than on the tree because it is a property of the SOURCE.
 	Standing Standing
+}
+
+// A Criterion says which rows are a node's children -- and, where it can, how a
+// whole LEVEL of that question is answered at once.
+//
+// The three census parts are here rather than on the child type because they
+// have to agree with Of and with each other, and a place where three things must
+// agree is a place to put them together. A criterion that cannot be censused
+// leaves them out, and every node is then counted on its own.
+type Criterion struct {
+	// Of is the question for one node: a Spec naming that node's children.
+	Of func(of Node) *Spec
+
+	// Over and By are how a whole level is counted in one question: the
+	// sequence every one of these children is drawn from, and the field saying
+	// which parent each belongs to. Group is the value naming one node's part
+	// of that census.
+	//
+	// **Only a criterion that PARTITIONS can be censused.** A census puts each
+	// row in exactly one group, so a criterion that puts a row in several
+	// nodes' answers -- a subtree, where every ancestor claims it -- cannot use
+	// one, and says so by leaving these out rather than by counting wrongly.
+	Over  *Spec
+	By    string
+	Group func(of Node) *Value
+}
+
+// counts reports whether this criterion can be answered a whole level at a time.
+func (c Criterion) counts() bool {
+	return c.Over != nil && c.By != "" && c.Group != nil
+}
+
+// Check refuses a criterion whose census parts do not all agree to be there.
+// Two of the three is a caller who meant to have one and will silently not.
+func (c Criterion) Check() error {
+	n := 0
+	for _, has := range []bool{c.Over != nil, c.By != "", c.Group != nil} {
+		if has {
+			n++
+		}
+	}
+	if n != 0 && n != 3 {
+		return fmt.Errorf("criterion: %d of the three census parts, "+
+			"which is a census that will never be taken", n)
+	}
+	return nil
 }
 
 // ChildrenByKey is `eq <field> <the parent's key>`: an adjacency list, and the
@@ -62,11 +108,19 @@ type ChildType struct {
 //
 // It needs no path, no delimiter and no address field. The parent's identity is
 // compared against the child's parent column, and that is the whole of it.
-func ChildrenByKey(field string) func(Node) *Spec {
-	return func(of Node) *Spec {
-		return &Spec{Filter: &Filter{
-			Op: OpEq, Field: field, Values: []*Value{of.Key},
-		}}
+//
+// It partitions -- every row has one value under the field, so it belongs to one
+// parent -- so a census of the source by that field answers every node at once.
+func ChildrenByKey(field string) Criterion {
+	return Criterion{
+		Of: func(of Node) *Spec {
+			return &Spec{Filter: &Filter{
+				Op: OpEq, Field: field, Values: []*Value{of.Key},
+			}}
+		},
+		Over:  &Spec{},
+		By:    field,
+		Group: func(of Node) *Value { return of.Key },
 	}
 }
 
@@ -81,11 +135,19 @@ func ChildrenByKey(field string) func(Node) *Spec {
 // field holding a symbol or a number is a different value from the text of the
 // same characters. A source whose location field is not text wants a different
 // criterion, and gets a refusal from the filter rather than a wrong answer.
-func (st Standing) ChildrenByLocation(field string) func(Node) *Spec {
-	return func(of Node) *Spec {
-		return &Spec{Filter: &Filter{
-			Op: OpEq, Field: field, Values: []*Value{NewText(of.Path)},
-		}}
+// It partitions for the same reason ChildrenByKey does -- a row lives in one
+// place -- so one census of the source by the location field answers every
+// node's twisty.
+func (st Standing) ChildrenByLocation(field string) Criterion {
+	return Criterion{
+		Of: func(of Node) *Spec {
+			return &Spec{Filter: &Filter{
+				Op: OpEq, Field: field, Values: []*Value{NewText(of.Path)},
+			}}
+		},
+		Over:  &Spec{},
+		By:    field,
+		Group: func(of Node) *Value { return NewText(of.Path) },
 	}
 }
 
@@ -106,13 +168,19 @@ func (st Standing) ChildrenByLocation(field string) func(Node) *Spec {
 // uses; the second is everything below them, bounded. Each half does exactly the
 // job it was described as doing, and descendants are the two TOGETHER rather
 // than either alone.
-func (st Standing) DescendantsByLocation(field string) func(Node) *Spec {
-	return func(of Node) *Spec {
+//
+// **It cannot be censused, and that is a property of the question rather than a
+// gap.** A census partitions, putting each row in exactly one group; a subtree
+// criterion puts every row in the group of every one of its ancestors. So there
+// is no field whose values are these answers, and this one leaves the census
+// parts out rather than counting something that is not what was asked.
+func (st Standing) DescendantsByLocation(field string) Criterion {
+	return Criterion{Of: func(of Node) *Spec {
 		return &Spec{Filter: &Filter{Op: OpOr, Children: []*Filter{
 			{Op: OpEq, Field: field, Values: []*Value{NewText(of.Path)}},
 			{Op: OpStarts, Field: field, Values: []*Value{NewText(st.Under(of.Path))}},
 		}}}
-	}
+	}}
 }
 
 // Sorted puts a sort on whatever a criterion produces.
@@ -122,9 +190,12 @@ func (st Standing) DescendantsByLocation(field string) func(Node) *Spec {
 // a filter and a sort. Windows in z-order under applications in name order needs
 // nothing added. It is written down because a capability nobody notices gets
 // reinvented.
-func Sorted(by func(Node) *Spec, levels ...SortLevel) func(Node) *Spec {
-	return func(of Node) *Spec {
-		spec := by(of)
+// The census parts come through untouched, a count belonging to the filter and
+// not to the order: sorting the same records cannot make there be more or fewer.
+func Sorted(by Criterion, levels ...SortLevel) Criterion {
+	inner := by.Of
+	by.Of = func(of Node) *Spec {
+		spec := inner(of)
 		if spec == nil {
 			return nil
 		}
@@ -132,6 +203,7 @@ func Sorted(by func(Node) *Spec, levels ...SortLevel) func(Node) *Spec {
 		out.Sort = levels
 		return &out
 	}
+	return by
 }
 
 // ChildTypes is the set a tree knows: one default, and any number named.
@@ -193,12 +265,18 @@ func (c ChildTypes) Check() error {
 		if err := c.Default.Standing.Check(); err != nil {
 			return fmt.Errorf("the default type's %w", err)
 		}
+		if err := c.Default.Children.Check(); err != nil {
+			return fmt.Errorf("the default type's %w", err)
+		}
 	}
 	for name, t := range c.Named {
 		if t == nil {
 			continue
 		}
 		if err := t.Standing.Check(); err != nil {
+			return fmt.Errorf("the type %q: its %w", name, err)
+		}
+		if err := t.Children.Check(); err != nil {
 			return fmt.Errorf("the type %q: its %w", name, err)
 		}
 	}

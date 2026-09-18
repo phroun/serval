@@ -1,8 +1,9 @@
 # A census
 
-> **Status: built, over records that are here.** `census.go` holds `Census`,
-> `Censusing`, `CensusOf` and `CensusSource`, and a `ListSource` takes one
-> exactly. No source that must be ASKED takes one yet — which is not an omission
+> **Status: built, over records that are here, and wired into the tree.**
+> `census.go` holds `Census`, `Censusing`, `CensusOf` and `CensusSource`; a
+> `ListSource` takes one exactly; and `TreeSource` uses one to answer every
+> twisty. No source that must be ASKED takes one yet — which is not an omission
 > but the point of the interface being optional: such a source says it cannot,
 > and the caller falls back to whatever it had. `docs/trees.md` is what this was
 > thought up in service of.
@@ -103,9 +104,24 @@ So the shape is two pieces, which is the `Counting` pattern again:
 
 ## What it buys
 
-**A page of twisties in one question.** This is the case it was invented for, and
-`trees.md` decision 7 leans on it: expandability is a field, or a count, and a
-count per visible row is only affordable if a page of them is one question.
+**A page of twisties in one question — and it turned out to be worth more than
+that.** This is the case it was invented for, and `trees.md` decision 7 leans on
+it: expandability is a field, or a count, and a count per visible row is only
+affordable if a page of them is one question.
+
+Building it found that one census answers **every twisty in the tree**, not
+merely every twisty on a level. The criterion partitions the whole source by one
+field, and a level is a handful of that field's values — so the same answer
+serves the top level, every level beneath it, and any level a mark opens later.
+A tree of one root and twenty leaves asks three questions with a census and
+twenty-three without, and the three do not move as the tree grows.
+
+**Which criteria can be censused is a property of the question.** A census puts
+each row in exactly one group, so only a criterion that PARTITIONS can use one.
+Children-by-key and children-by-location both do — a row has one parent, a row
+lives in one place. A subtree criterion does not: every ancestor claims every row
+beneath it, so there is no field whose values are those answers. It says so by
+leaving the census parts out, and is counted a node at a time.
 
 **`openAll` sized before it is opened.** How big each subtree is, for every node
 at a level, in one answer — which is what lets a tree bound the unknown extent of

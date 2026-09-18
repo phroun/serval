@@ -222,7 +222,7 @@ func TestAStandingThatCannotMeanWhatItSaysIsRefused(t *testing.T) {
 func TestAChildTypeMayBringItsOwnSort(t *testing.T) {
 	by := Sorted(ChildrenByKey("parent"),
 		SortLevel{Field: "kind", Level: Level{Descending: true}})
-	spec := by(Node{Key: NewInt(10)})
+	spec := by.Of(Node{Key: NewInt(10)})
 	if len(spec.Sort) != 1 || spec.Sort[0].Field != "kind" {
 		t.Fatalf("the sort did not come through: %v", spec.Sort)
 	}
@@ -304,9 +304,9 @@ func TestAChildTypeSetIsChecked(t *testing.T) {
 // --- helpers ------------------------------------------------------------
 
 // childrenOf asks a criterion for one node's children and lists their keys.
-func childrenOf(t *testing.T, src Source, by func(Node) *Spec, of Node) string {
+func childrenOf(t *testing.T, src Source, by Criterion, of Node) string {
 	t.Helper()
-	return readKeys(t, src, by(of))
+	return readKeys(t, src, by.Of(of))
 }
 
 func readKeys(t *testing.T, src Source, spec *Spec) string {

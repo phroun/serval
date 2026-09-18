@@ -8,9 +8,9 @@
 > holds it, which makes the count, the positions and `From` all exact, and which
 > is right for records in hand. A source that must be ASKED wants the window and
 > not the whole, and that is the next piece rather than a different design — the
-> same interface, answered lazily. **The census is not wired in either**, so
-> expandability counts one node at a time; joining it needs a child type to say
-> which field a census of its children would partition by.
+> same interface, answered lazily. **The census IS wired in**: a criterion
+> carries the three parts of one, and a tree takes a single census per child type
+> that answers every twisty in it.
 >
 > Where building changed a decision, it says so and the decision has been
 > rewritten rather than annotated. `sources.md` is what a source is,

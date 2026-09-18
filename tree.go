@@ -33,11 +33,13 @@ package serval
 // next piece rather than a different design: the same interface, answered
 // lazily.
 //
-// **The census is not wired in.** Expandability asks the row, and then counts
-// the child spec one node at a time. `docs/census.md` is how a page of those
-// counts becomes one question, and joining it needs a child type to say which
-// field a census of its children would partition by -- an interface worth
-// getting right rather than guessing at now.
+// **The census is wired in, and it is worth more than it was meant to be.** It
+// was invented to answer a page of thirty twisties in one question. What it
+// actually replaces is a question per expandable row in the whole TREE: the
+// criterion partitions the source by one field, a level is a handful of that
+// field's values, so one census serves the top level and every level beneath it.
+// A criterion that cannot partition -- a subtree, where every ancestor claims
+// every row -- says so and is counted a node at a time.
 
 import (
 	"fmt"
@@ -399,6 +401,11 @@ type descent struct {
 	set  *treeDataSet
 	tree *TreeSource
 	rows []treeRow
+
+	// counts is one census per child type, taken when a twisty first needs one
+	// and kept for the rest of this build. A nil value means it was tried and
+	// could not be had.
+	counts map[*ChildType]*Census
 }
 
 // a standingAt is one node on the path from the root, for the revisit budget.
@@ -480,14 +487,10 @@ func (d *descent) level(ct *ChildType, src Source, spec *Spec, st Standing,
 		if looped || children.Exact && children.N == 0 {
 			continue
 		}
-		if !d.tree.mark.Shows(mine...) || next == nil || next.Children == nil {
+		if !d.tree.mark.Shows(mine...) || next == nil || next.Children.Of == nil {
 			continue
 		}
-		under := next.Source
-		if under == nil {
-			under = d.tree.opt.Source
-		}
-		if err := d.level(next, under, next.Children(node), next.Standing,
+		if err := d.level(next, d.under(next), next.Children.Of(node), next.Standing,
 			node, depth+1, mine, append(seen, here)); err != nil {
 			return err
 		}
@@ -548,7 +551,7 @@ func (d *descent) withShallow(spec *Spec) *Spec {
 // A count per visible row is a real cost over a source that must be asked, and
 // `docs/census.md` is how a whole page of them becomes one question.
 func (d *descent) reach(ct *ChildType, of Node, looped bool) RecordCount {
-	if looped || ct == nil || ct.Children == nil {
+	if looped || ct == nil || ct.Children.Of == nil {
 		return Exactly(0)
 	}
 	if f := d.tree.opt.SaysChildren; f != "" {
@@ -562,16 +565,62 @@ func (d *descent) reach(ct *ChildType, of Node, looped bool) RecordCount {
 			return Exactly(int(v.Int))
 		}
 	}
-	src := ct.Source
-	if src == nil {
-		src = d.tree.opt.Source
+	if c := d.census(ct); c != nil {
+		return c.CountOfGroup(ct.Children.Group(of))
 	}
-	set, err := src.Open(d.withShallow(ct.Children(of)))
+	set, err := d.under(ct).Open(d.withShallow(ct.Children.Of(of)))
 	if err != nil {
 		return Unknown()
 	}
 	defer set.Close()
 	return CountOf(set)
+}
+
+// census is this child type's counts, taken once and kept.
+//
+// **One census answers every node of a type, not merely every node of a level.**
+// The criterion partitions the whole source by one field, and a level is a
+// handful of that field's values -- so the same answer serves the top level, and
+// every level beneath it, and any level a mark opens later in this build. The
+// case it was invented for was a page of thirty twisties; what it actually
+// replaces is a question per expandable row in the tree.
+//
+// A type that cannot be censused, or a source that will not take one, is
+// remembered as such: the fallback is a count per node and asking again for
+// every one of them would be worse than not trying.
+func (d *descent) census(ct *ChildType) *Census {
+	if c, tried := d.counts[ct]; tried {
+		return c
+	}
+	if d.counts == nil {
+		d.counts = map[*ChildType]*Census{}
+	}
+	d.counts[ct] = nil // tried, and nothing came of it unless the rest succeeds
+	if !ct.Children.counts() {
+		return nil
+	}
+	// The shallow filter goes on, or the census would count rows the level
+	// itself would not show.
+	set, err := d.under(ct).Open(d.withShallow(ct.Children.Over))
+	if err != nil {
+		return nil
+	}
+	defer set.Close()
+	c, err := CensusOf(set, ct.Children.By)
+	if err != nil {
+		return nil
+	}
+	d.counts[ct] = &c
+	return &c
+}
+
+// under is where this type's children are read from: its own source, or the
+// tree's where it grafts nothing.
+func (d *descent) under(ct *ChildType) Source {
+	if ct.Source != nil {
+		return ct.Source
+	}
+	return d.tree.opt.Source
 }
 
 // emit adds one row, with the record's own fields and the tree's beside them.

@@ -234,9 +234,14 @@ func TestATreeRefusesASortOfItsOwnSequence(t *testing.T) {
 	}
 }
 
-// A level's OWN sort is honoured, which is where ordering belongs.
+// A level's OWN sort is honoured, which is where ordering belongs -- and the
+// census parts come through it untouched, a count belonging to the FILTER and
+// not to the order: sorting the same records cannot make there be more or fewer.
 func TestEachLevelCarriesItsOwnSort(t *testing.T) {
 	down := []SortLevel{{Field: "name", Level: Level{Descending: true}}}
+	if !Sorted(ChildrenByKey("parent"), down...).counts() {
+		t.Error("sorting a criterion cost it its census")
+	}
 	src := treeOf(t, TreeOptions{
 		Spec: &Spec{
 			Filter: &Filter{Op: OpEq, Field: "parent", Values: []*Value{nil}},
@@ -670,5 +675,225 @@ func TestAFromPastTheEndStaysAtTheEnd(t *testing.T) {
 	}
 	if out.done.First != Exactly(4) {
 		t.Errorf("it says it began at %v, want the last row", out.done.First)
+	}
+}
+
+// --- the census ---------------------------------------------------------
+
+// watched is a source that counts how many times it is asked anything, which is
+// the only way to check that one question replaced many.
+type watched struct {
+	Source
+	opens *int
+}
+
+func (w watched) Open(spec *Spec) (DataSet, error) {
+	*w.opens++
+	return w.Source.Open(spec)
+}
+
+// wide is one root with `n` children, all of them leaves -- the shape where a
+// twisty per row costs the most.
+func wide(n int) *ListSource {
+	rows := []Row{NewRow(NewInt(1), Record{Named("name", "root")})}
+	for i := 0; i < n; i++ {
+		rows = append(rows, NewRow(NewInt(int64(100+i)), Record{
+			Named("name", fmt.Sprintf("leaf%d", i)), Named("parent", 1),
+		}))
+	}
+	return NewListSource(rows)
+}
+
+// **One census answers every twisty in the tree**, so the number of questions
+// stops growing with the number of expandable rows. That is the whole of what it
+// was built for, and it cannot be checked by looking at the answers -- only by
+// counting the asking.
+func TestOneCensusAnswersEveryTwisty(t *testing.T) {
+	ask := func(n int, by Criterion) int {
+		opens := 0
+		src := treeOf(t, TreeOptions{
+			Source: watched{wide(n), &opens},
+			Spec:   &Spec{Filter: &Filter{Op: OpEq, Field: "parent", Values: []*Value{nil}}},
+			Types:  ChildTypes{Default: &ChildType{Children: by}},
+		})
+		src.ExpandAll()
+		set, got := wholeTree(t, src)
+		defer set.Close()
+		if want := n + 1; strings.Count(got, " ")+1 != want {
+			t.Fatalf("with %d leaves the tree drew %q", n, got)
+		}
+		return opens
+	}
+
+	// Without the census parts, a twisty is a count and a count is a question.
+	blind := ChildrenByKey("parent")
+	blind.Over, blind.By, blind.Group = nil, "", nil
+
+	// And a SORTED criterion keeps its census, which is the same claim from the
+	// other side: a count belongs to the filter and not to the order.
+	sorted := Sorted(ChildrenByKey("parent"),
+		SortLevel{Field: "name", Level: Level{Descending: true}})
+
+	for _, n := range []int{1, 5, 20} {
+		withIt, without := ask(n, ChildrenByKey("parent")), ask(n, blind)
+		if got := ask(n, sorted); got != 3 {
+			t.Errorf("with %d leaves and a sorted census it asked %d, want 3", n, got)
+		}
+		// Three: the top level, the census, and the root's children. It does not
+		// move, whatever `n` is.
+		if withIt != 3 {
+			t.Errorf("with %d leaves and a census it asked %d questions, want 3", n, withIt)
+		}
+		if want := 3 + n; without != want {
+			t.Errorf("with %d leaves and no census it asked %d, want %d", n, without, want)
+		}
+	}
+}
+
+// And the answers are the same either way, which is the part that would be easy
+// to lose while making it faster.
+func TestACensusGivesTheSameAnswersAsCounting(t *testing.T) {
+	blind := ChildrenByKey("parent")
+	blind.Over, blind.By, blind.Group = nil, "", nil
+
+	saw := func(by Criterion) []string {
+		src := treeOf(t, TreeOptions{
+			Types: ChildTypes{Default: &ChildType{Children: by}},
+		})
+		src.ExpandAll()
+		set, err := src.Open(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer set.Close()
+		var out treeTook
+		if err := set.Read(&Scope{Count: 100}, &out); err != nil {
+			t.Fatal(err)
+		}
+		var says []string
+		for i, f := range out.fields {
+			says = append(says, fmt.Sprintf("%s=%s", out.lines[i],
+				Segment(f.Get("expandable"))))
+		}
+		return says
+	}
+
+	withIt, without := saw(ChildrenByKey("parent")), saw(blind)
+	if strings.Join(withIt, " ") != strings.Join(without, " ") {
+		t.Errorf("the census says\n  %v\nand counting says\n  %v", withIt, without)
+	}
+	if want := "alpha/0=1 beta/1=1 delta/2=0 gamma/0=1 epsilon/1=0"; strings.Join(withIt, " ") != want {
+		t.Errorf("it says\n  %s\nwant\n  %s", strings.Join(withIt, " "), want)
+	}
+}
+
+// **A criterion that cannot partition is counted a node at a time**, and says so
+// rather than censusing something that is not what was asked. A subtree puts
+// every row in the group of every one of its ancestors, so no field's values are
+// those answers.
+func TestASubtreeCriterionTakesNoCensus(t *testing.T) {
+	sub := here.DescendantsByLocation("location")
+	if sub.counts() {
+		t.Error("a subtree criterion claims it can be censused")
+	}
+	// All three parts or none, checked here as well as at construction: this is
+	// the guard that decides whether a census is attempted at all, and half of
+	// one would census the wrong thing rather than declining.
+	for _, half := range []Criterion{
+		{Over: &Spec{}},
+		{By: "parent"},
+		{Group: func(Node) *Value { return nil }},
+		{Over: &Spec{}, By: "parent"},
+	} {
+		if half.counts() {
+			t.Errorf("a criterion with part of a census claims it can be taken: %+v", half)
+		}
+	}
+	// And it still works, by counting.
+	src, err := NewTreeSource(TreeOptions{
+		Source:   folders(),
+		Spec:     &Spec{Filter: &Filter{Op: OpEq, Field: "location", Values: []*Value{NewText("/")}}},
+		Standing: here,
+		Types:    ChildTypes{Default: &ChildType{Children: sub, Standing: here}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	src.Expand("/usr")
+	set, got := wholeTree(t, src)
+	defer set.Close()
+	// Everything under /usr, flat beneath it: the subtree, deliberately.
+	if want := "usr/0 local/1 bin/1 share/1 locally/1"; got != want {
+		t.Errorf("the subtree tree reads\n  %s\nwant\n  %s", got, want)
+	}
+}
+
+// A source that will not take a census is asked for one ONCE, not once per node
+// -- the whole point being to ask less, and a failed attempt repeated per row
+// would be worse than not trying.
+//
+// The rest of the arithmetic is the honest cost of a source that will neither
+// census nor count, and is worth spelling out because it is what the census
+// exists to avoid. Nothing can say how many children a row has, so every row
+// reads `undefined`, which means draw the twisty and FIND OUT on opening -- so
+// an expand-all reads a level per row, leaves included. Six rows, and the tree
+// opens a sequence for every one of them twice over.
+func TestASourceThatWillNotCensusIsAskedOnce(t *testing.T) {
+	opens := 0
+	src := treeOf(t, TreeOptions{Source: watched{uncounted{wide(5)}, &opens},
+		Spec: &Spec{Filter: &Filter{Op: OpEq, Field: "parent", Values: []*Value{nil}}}})
+	src.ExpandAll()
+	set, got := wholeTree(t, src)
+	defer set.Close()
+
+	if want := 6; strings.Count(got, " ")+1 != want {
+		t.Fatalf("it drew %q", got)
+	}
+	// One attempt at a census and not one per node, which is what pins this
+	// number: the top level, the failed census, the root's count and the root's
+	// children, then a count and a level read for each of the five leaves. Six
+	// attempts at a census instead of one would make it twenty.
+	if want := 1 + 1 + 2 + 5 + 5; opens != want {
+		t.Errorf("it asked %d questions, want %d", opens, want)
+	}
+}
+
+// Two of the three census parts is a caller who meant to have one and silently
+// will not, so it is refused where the tree is built.
+func TestHalfACensusIsRefused(t *testing.T) {
+	half := ChildrenByKey("parent")
+	half.Group = nil
+	_, err := NewTreeSource(TreeOptions{
+		Source: kin(),
+		Types:  ChildTypes{Default: &ChildType{Children: half}},
+	})
+	if err == nil {
+		t.Fatal("it accepted a criterion with half a census on it")
+	}
+	if !strings.Contains(err.Error(), "census") {
+		t.Errorf("the refusal does not say what is wrong: %v", err)
+	}
+}
+
+// The shallow filter goes on the census too, or a twisty would count rows the
+// level itself would not show.
+func TestTheCensusCountsWhatTheLevelWouldShow(t *testing.T) {
+	src := treeOf(t, TreeOptions{})
+	set, err := src.Open(&Spec{Filter: &Filter{
+		Op: OpNot, Children: []*Filter{
+			{Op: OpEq, Field: "name", Values: []*Value{NewText("beta")}},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer set.Close()
+
+	var out treeTook
+	if err := set.Read(&Scope{Count: 100}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.fields[0].Get("expandable"); !Equal(got, NewInt(0)) {
+		t.Errorf("alpha says %v children with its only one filtered out, want nought", got)
 	}
 }
