@@ -191,13 +191,18 @@ that may contain slashes, and once the delimiter is chosen for the data the
 question does not arise. A segment containing the delimiter makes a path that
 means two things, and it is the caller's to avoid, exactly as a duplicate key is.
 
-Marks are keyed by the path, which is now a string the caller's own delimiter
-makes unambiguous. Nothing needs escaping and nothing needs length-prefixing.
-Joining and deriving both produce one spelling, so a node has one key; a path
-READ WHOLE is whatever the record says, and data that writes `/usr/local` on one
-row and `/usr/local/` on another has two names for one node and will hold two
-marks. That is a property of the data rather than something the tree can mend,
-and it is the cost of the reading that does not build the path itself.
+**A mark is keyed by whatever names a node's POSITION** — which is the path
+where a path is what does that, and the record's own identity where the identity
+already does it. The next section is when that holds, and the section after it is
+the whole shape of tree where it always does.
+
+Where the key is a path, the caller's own delimiter is what makes it
+unambiguous: nothing needs escaping and nothing needs length-prefixing. Joining
+and deriving both produce one spelling, so a node has one key; a path READ WHOLE
+is whatever the record says, and data that writes `/usr/local` on one row and
+`/usr/local/` on another has two names for one node and will hold two marks.
+That is a property of the data rather than something the tree can mend, and it is
+the cost of the reading that does not build the path itself.
 
 ### What identifies a row of the flattened sequence
 
@@ -213,6 +218,54 @@ Neither is solved here. Where either is wanted, the path is what tells the rows
 apart and the tree is told to identify rows by path instead. That is a choice a
 caller makes knowing why, rather than a cost every tree pays: a path is longer
 than a key, and a tree of one source never needs it.
+
+**Revisits are the third case**, and they are why this is stated as a condition
+rather than as a default. With `Revisits` above nought the same record stands at
+two positions on purpose, so its identity no longer names one of them — and
+identity-keyed marks then mean that opening one lap opens every lap. Sometimes
+that is exactly what somebody wants to see and sometimes it is nonsense, so a
+tree that allows revisits AND wants the laps to open independently is a tree that
+keys by path. It is the same trade as the other two, arrived at from a different
+direction.
+
+## An adjacency list needs no paths at all
+
+A table of `id` and `parent`, integers both, with nothing anywhere that looks
+like an address. This is the commonest hierarchy in a database and it wants none
+of the machinery above.
+
+| | |
+|---|---|
+| its children | `eq parent <the parent's id>` |
+| the top level | the caller's own spec — `eq parent undefined`, or `0`, or `-1`, or whatever that table means by a root |
+
+That is the whole of the configuration. There is no delimiter to choose, no
+field holding an address, no joining and no prefix, and the `starts` criterion
+never comes up because descendants are not a string question here.
+
+**The one place the path was load-bearing is the mark key, and the identity
+serves.** A record in a pure adjacency list has one parent, so it stands at
+exactly one position, so its identity names that position — which is the
+condition the section above already states for row identity, asked once and
+answering both. Marks are keyed by `id`. Nothing is built, nothing is
+concatenated, and no two spellings of one node can arise, because there are no
+spellings.
+
+Everything else carries over untouched, and it is worth being explicit that none
+of it was secretly about paths:
+
+| | |
+|---|---|
+| **cycles** | already counted on identity rather than on the path, for reasons of its own |
+| **pre-order** | already built rather than sorted, out of the buckets |
+| **expandability** | already a field, and a `parent` table often has the child count in one |
+| **deep filtering** | already eager and for records in hand — bucket by `parent`, mark upwards from what matched |
+| **counts, `From`, `Complete.First`** | already read off the flattened order, which exists either way |
+
+**So a path is a reading, not a requirement.** It is what data shaped like an
+address offers a tree, and it buys one real thing — knowing where a row belongs
+without having descended to it — which an adjacency list cannot offer and does
+not need, because it is in hand or it is walked.
 
 ## Filtering, shallow and deep
 
@@ -329,7 +382,9 @@ same eagerness, carrying the same warning, and no new one.
 ## Decisions taken
 
 1. A tree is a `Source`, wrapping a source, presenting the visible rows flat.
-2. Expansion is marks over paths, with the two wiping rules above.
+2. Expansion is marks, with the two wiping rules above, keyed by whatever names
+   a node's position — the record's identity where that already picks out one,
+   and the path where it does not.
 3. Marks live on the SOURCE. Two views sharing a `TreeSource` share expansion,
    which is sometimes exactly right; a view wanting its own wraps its own, which
    is cheap because wrapping is all it is. On the data set instead, two data
@@ -343,6 +398,8 @@ same eagerness, carrying the same warning, and no new one.
    is not the default. **No trailing delimiter is assumed**: joining does not
    double one already there, and the prefix question has the tree append one,
    because `starts location "/usr/local"` would drag in `/usr/locally`.
+   **And a path is optional entirely** — an adjacency list of `id` and `parent`
+   is a tree with no delimiter, no address field and no string built anywhere.
 6. Deep filtering is eager and is for records in hand.
 7. **Expandability is a field.** A source that knows says so, and one that does
    not leaves it undefined, which reads as a leaf. Over records in hand a tree
