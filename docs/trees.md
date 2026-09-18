@@ -315,7 +315,7 @@ count, `Close`. So three degrees, in the spirit of blank, placed and filled:
 | unknown | `CountOf` answers `Unknown()` for anything that is not `Counting`, so the twisty is drawn and the answer found on opening |
 
 A count per visible row is a real cost over a source that must be asked, and
-`docs/tally.md` is how a whole page of them becomes one question.
+`docs/census.md` is how a whole page of them becomes one question.
 
 **A child type may change the SORT, and this is free.** It produces a whole
 `Spec`, and a Spec is a source, a filter and a sort. Windows in z-order under
@@ -486,7 +486,7 @@ same eagerness, carrying the same warning, and no new one.
    graft, a row in one source having no business knowing about another — the
    child type's `Spec` is counted rather than read, and `CountOf` answering
    `Unknown()` is the third degree: draw the twisty and find out on opening. A
-   tally turns a page of those counts into one question.
+   census turns a page of those counts into one question.
 8. **A sort naming a field a record has not got is not refused.** It reads as
    `undefined`, which is a value with a rank, so those rows gather at the bottom
    of that level and are separated by the levels after it and by the identity
@@ -510,7 +510,7 @@ same eagerness, carrying the same warning, and no new one.
 ## Open questions
 
 None outstanding on the tree itself. What is still to settle is in
-`docs/tally.md`, which the expandability count leans on.
+`docs/census.md`, which the expandability count leans on.
 
 ## The risk worth naming
 
