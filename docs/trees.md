@@ -84,7 +84,7 @@ record. Most of them are one predicate:
 |---|---|---|
 | its parent by key | `eq parent <the parent's key>` | an adjacency list |
 | its container | `eq location <the parent's own path>` | a row that says where it LIVES |
-| everything under it | `starts location <the parent's own path>` | the subtree, deliberately |
+| everything under it | `starts location <the parent's own path, and a delimiter>` | the subtree, deliberately |
 
 All three are expressible with what a filter already has: `OpEq` and `OpStarts`
 exist. Nothing new is needed to SAY what a child is.
@@ -102,22 +102,40 @@ Something filesystem-shaped, two fields, nothing derived:
 
 | `location` | `name` | its own path |
 |---|---|---|
-| `/` | `usr` | `/usr/` |
-| `/usr/` | `local` | `/usr/local/` |
-| `/usr/local/` | `bin` | `/usr/local/bin/` |
-| `/usr/local/` | `share` | `/usr/local/share/` |
+| `/` | `usr` | `/usr` |
+| `/usr` | `local` | `/usr/local` |
+| `/usr/local` | `bin` | `/usr/local/bin` |
+| `/usr/local` | `share` | `/usr/local/share` |
 
-The children of `/usr/local/` are `eq location "/usr/local/"` — the two rows,
-one equality, no depth field and no prefix arithmetic. Everything beneath it is
-`starts location "/usr/local/"`, which is the same criterion with the other
-operator. So `eq` gives children and `starts` gives descendants, which is the
-shallow and deep distinction expressed in the criterion rather than added beside
-it. A caller wanting the subtree in one question asks for it; one wanting a level
-asks for that.
+The children of `/usr/local` are `eq location "/usr/local"` — the two rows, one
+equality, no depth field and no prefix arithmetic. So `eq` gives children and
+`starts` gives descendants, which is the shallow and deep distinction expressed
+in the criterion rather than added beside it. A caller wanting the subtree in one
+question asks for it; one wanting a level asks for that.
 
 The field is called whatever the data calls it — `directory`, `container`,
 `folder`, `thread` — and the tree is told which name it is. `location` is this
 document's example and not a reserved word.
+
+### Trailing delimiters are not assumed
+
+The table writes `/usr/local` and not `/usr/local/`, and data that writes the
+other way is just as common. **The tree assumes neither**, and both places it
+could have are places it must not.
+
+**Joining** a container and a name puts the delimiter between them and does not
+double one already there. So `/usr` and `local` join as `/usr/local`, `/usr/`
+and `local` join as `/usr/local` as well, and the root spelled `/` does not
+produce `//usr`. One rule reads both conventions, so nothing has to be declared.
+
+**The prefix question is where it bites, and the tree appends the delimiter
+itself.** Descendants of `/usr/local` are `starts location "/usr/local/"` and
+NOT `starts location "/usr/local"`, because the second also matches
+`/usr/locally` — a sibling whose name begins with the same letters, dragged into
+a subtree it has nothing to do with. The delimiter is what makes a prefix a
+boundary instead of a spelling, and since the data may not have written one,
+appending it is the tree's job. Equality needs no such care: `eq` compares the
+whole of the field, so the path as the data spells it is right as it stands.
 
 A type naming the same source as the top level makes a hierarchy nested inside
 one body of records, by those same rules all the way down. A type naming a
@@ -150,8 +168,8 @@ So the path is a **field**, got one of three ways:
 | | |
 |---|---|
 | **its container, plus its name** | two fields — `location` and `name` in the table above — saying where it LIVES and what it is called, and its own path is the two joined |
-| **read whole** | the record carries its own full path, materialised, in one field |
-| **derived** | the tree builds it as it descends: the parent's path, the delimiter, and this row's segment — a field, defaulting to the record's key |
+| **read whole** | the record carries its own full path, materialised, in one field, spelled however it is spelled |
+| **derived** | the tree builds it as it descends: the parent's path joined with this row's segment — a field, defaulting to the record's key |
 
 **The first is the best of the three**, and not only because it makes children
 one equality. A row's own path can be worked out from the ROW ALONE — its
@@ -175,6 +193,11 @@ means two things, and it is the caller's to avoid, exactly as a duplicate key is
 
 Marks are keyed by the path, which is now a string the caller's own delimiter
 makes unambiguous. Nothing needs escaping and nothing needs length-prefixing.
+Joining and deriving both produce one spelling, so a node has one key; a path
+READ WHOLE is whatever the record says, and data that writes `/usr/local` on one
+row and `/usr/local/` on another has two names for one node and will hold two
+marks. That is a property of the data rather than something the tree can mend,
+and it is the cost of the reading that does not build the path itself.
 
 ### What identifies a row of the flattened sequence
 
@@ -252,6 +275,57 @@ this many appeared, between these two — is to `Added` exactly what the named
 list is to the other three, and `RecordCount.Add` already takes an `n`. Nothing
 about the four reasons is short of what a tree needs; one field is.
 
+## Cycles are a small budget
+
+A child type keyed on a prefix can make a node its own descendant. Symlink loops
+do it, a `parent` column with a bad row does it, and a graft that points back at
+its own top does it on purpose.
+
+**It is a setting, because the two behaviours are both right.** A tree that
+refuses says the data is a tree and means it. A tree that allows says the data
+is a graph and showing the loop once is how somebody SEES it — which is what
+several file managers do deliberately, and the reason this is not a rule.
+
+**`Revisits`, 0 to 3, and 0 is the default.** It is how many times a node may
+appear again beneath itself on one root-to-leaf path. Zero refuses, so a node
+already standing on its own path is not expandable and draws no twisty. One
+shows the loop, which is the point of allowing it at all. The cap is three
+because the reason to allow any is to make the cycle visible and nobody has ever
+needed a fourth lap to see one; a value above it is clamped rather than refused,
+the way a count is.
+
+**Counted on the record's IDENTITY, never on the path.** A cycle appends a
+segment each time round — `/a/b/a/b/` — so every lap has a path nobody has seen
+before while it is the same record every time. The path is the thing GROWING and
+cannot be what notices. This matters most in exactly the case that tempts the
+other answer: a tree told to identify its rows by path still counts revisits on
+the underlying record, because the tree knows both and only one of them is the
+same thing twice.
+
+### Why it cannot hang
+
+The budget makes every path finite. That alone is not enough — a bounded path
+can still enclose a colossal number of rows — so it is worth saying which
+operations were ever at risk.
+
+**Reading never was.** A scope asks for a count and the tree produces that many
+visible rows; a cycle makes the sequence long, not the walk unbounded. Same for
+`From`, which is a bounded descent to a position. This falls out of scopes being
+what they are and needs nothing added.
+
+**Counting is where it bites, and `AtLeast` is the answer already here.** A tree
+that has taken a revisit and has not walked the whole thing reports a floor
+rather than a figure, exactly as one over records that must be asked for does.
+The thumb then keeps off the bottom of its track, which the list already handles.
+A tree does not walk a cycle to the end in order to answer how many rows there
+are, because it is allowed not to know.
+
+**Deep filtering is the one that has to be refused**, and it already is by a
+rule stated for another reason: a deep filter is eager, so it is for records in
+hand. Over records in hand with revisits allowed the eager pass is bounded by the
+path rule and may still be large, and that is the caller's to know — it is the
+same eagerness, carrying the same warning, and no new one.
+
 ## Decisions taken
 
 1. A tree is a `Source`, wrapping a source, presenting the visible rows flat.
@@ -266,7 +340,9 @@ about the four reasons is short of what a tree needs; one field is.
    plus its name, read whole, or derived by descending — with a delimiter the
    caller chooses, and field names the caller gives. Identifying rows by path
    instead is available for a tree that grafts sources or repeats a record, and
-   is not the default.
+   is not the default. **No trailing delimiter is assumed**: joining does not
+   double one already there, and the prefix question has the tree append one,
+   because `starts location "/usr/local"` would drag in `/usr/locally`.
 6. Deep filtering is eager and is for records in hand.
 7. **Expandability is a field.** A source that knows says so, and one that does
    not leaves it undefined, which reads as a leaf. Over records in hand a tree
@@ -286,13 +362,12 @@ about the four reasons is short of what a tree needs; one field is.
    that stops where the shorter run ends and returns 0, so `[a]` and `[a, b]`
    compare EQUAL rather than parent-before-child. A tuple per level cannot
    express a varying-depth path either. `TreeSource` orders its own sequence.
+10. **Cycles are a `Revisits` setting, 0 to 3, defaulting to 0**, counted on the
+   record's identity rather than on the path, and clamped rather than refused.
+   Nothing hangs, because reading is bounded by the scope and counting is allowed
+   to answer `AtLeast`.
 
 ## Open questions
-
-- **Cycles.** A child type keyed on a prefix can make a node its own descendant.
-  The path is in hand, so refusing to open a node already on its own path is
-  cheap — but some file managers deliberately allow it, so whether this is a
-  rule or a setting is not settled.
 - **Whether one tree can take a path one way from some rows and another way from
   others** — a graft whose second source says where its rows live under a first
   that only has edges. What the fields are CALLED is settled: the caller names
