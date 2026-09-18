@@ -921,12 +921,12 @@ func TestAChainOfKindsDeclaresItself(t *testing.T) {
 		Source: hosts,
 		Spec:   &Spec{},
 		Types: NodeTypes{
-			Default: &NodeType{Then: "applications"},
+			Default: &NodeType{Then: Always("applications")},
 			Named: map[string]*NodeType{
 				"applications": {
 					Source:   apps,
 					Children: ChildrenByKey("host"),
-					Then:     "windows",
+					Then:     Always("windows"),
 				},
 				"windows": {Source: windows, Children: ChildrenByKey("app")},
 			},
@@ -1005,7 +1005,7 @@ func TestARowOverridesItsChildrensKind(t *testing.T) {
 func TestAThenNamingNothingIsRefused(t *testing.T) {
 	_, err := NewTreeSource(TreeOptions{
 		Source: kin(),
-		Types:  NodeTypes{Default: &NodeType{Then: "nothing registered"}},
+		Types:  NodeTypes{Default: &NodeType{Then: Always("nothing registered")}},
 	})
 	if err == nil {
 		t.Fatal("it accepted a chain that goes nowhere")
@@ -1019,9 +1019,9 @@ func TestAThenNamingNothingIsRefused(t *testing.T) {
 	_, err = NewTreeSource(TreeOptions{
 		Source: kin(),
 		Types: NodeTypes{
-			Default: &NodeType{Then: "middle"},
+			Default: &NodeType{Then: Always("middle")},
 			Named: map[string]*NodeType{
-				"middle": {Children: ChildrenByKey("parent"), Then: "the missing end"},
+				"middle": {Children: ChildrenByKey("parent"), Then: Always("the missing end")},
 			},
 		},
 	})
@@ -1047,5 +1047,203 @@ func TestATreeWithNoDefaultKindIsRefused(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "default") {
 		t.Errorf("the refusal does not say what is missing: %v", err)
+	}
+}
+
+// **One parent, two distinct kinds of children, out of two entirely different
+// sources.** A host has applications and it has volumes, and neither is a
+// special case of the other.
+//
+// This is what made `Then` a list. With one name a parent got one kind of child,
+// so the second source was simply never asked -- and worse, `Check` let it
+// through, because it only asked whether SOME chain existed rather than whether
+// THIS kind was on one.
+func TestOneParentHasTwoKindsOfChildren(t *testing.T) {
+	hosts := NewListSource([]Row{
+		NewRow(NewInt(1), Record{Named("name", "a host")}),
+		NewRow(NewInt(2), Record{Named("name", "another host")}),
+	})
+	apps := NewListSource([]Row{
+		NewRow(NewInt(10), Record{Named("name", "an app"), Named("host", 1)}),
+		NewRow(NewInt(11), Record{Named("name", "another app"), Named("host", 1)}),
+		NewRow(NewInt(12), Record{Named("name", "a lone app"), Named("host", 2)}),
+	})
+	volumes := NewListSource([]Row{
+		NewRow(NewInt(20), Record{Named("name", "a disk"), Named("on", 1)}),
+		NewRow(NewInt(21), Record{Named("name", "a stick"), Named("on", 1)}),
+	})
+
+	src, err := NewTreeSource(TreeOptions{
+		Source: hosts,
+		Spec:   &Spec{},
+		Types: NodeTypes{
+			Default: &NodeType{Then: Always("applications", "volumes")},
+			Named: map[string]*NodeType{
+				"applications": {Source: apps, Children: ChildrenByKey("host")},
+				"volumes":      {Source: volumes, Children: ChildrenByKey("on")},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	src.ExpandAll()
+	set, got := wholeTree(t, src)
+	defer set.Close()
+
+	// Grouped in the order the type named them: every application, then every
+	// volume. And the second host has applications and no volumes, which is not
+	// a special case -- it is one of the two groups being empty.
+	want := "a host/0 an app/1 another app/1 a disk/1 a stick/1 " +
+		"another host/0 a lone app/1"
+	if got != want {
+		t.Errorf("the mixed level reads\n  %s\nwant\n  %s", got, want)
+	}
+
+	// **How many children is the SUM over the kinds.** A host with two apps and
+	// two volumes has four, and a twisty drawn from one kind alone would be
+	// wrong about it.
+	var out treeTook
+	if err := set.Read(&Scope{Count: 100}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if n := out.fields[0].Get("expandable"); !Equal(n, NewInt(4)) {
+		t.Errorf("the first host says it has %v children, want four", n)
+	}
+	if n := out.fields[5].Get("expandable"); !Equal(n, NewInt(1)) {
+		t.Errorf("the second host says it has %v children, want one", n)
+	}
+
+	// **And every row says WHICH KIND it is.** Nothing distinguishes the kinds by
+	// looking at a row: the descent knows by construction, whatever the
+	// `applications` criterion returned out of the applications source being an
+	// application. This field is where it says so, and without it a view holding
+	// a mapping per kind could not tell which mapping a row takes.
+	var kinds []string
+	for _, f := range out.fields {
+		kinds = append(kinds, Segment(f.Get("kind")))
+	}
+	if got, want := strings.Join(kinds, " "),
+		" applications applications volumes volumes  applications"; got != want {
+		t.Errorf("the rows say they are\n  %q\nwant\n  %q", got, want)
+	}
+}
+
+// And a kind that nothing can reach is refused, which is the check that let the
+// mixed level fail silently before.
+func TestAKindNothingNamesIsRefused(t *testing.T) {
+	_, err := NewTreeSource(TreeOptions{
+		Source: kin(),
+		Types: NodeTypes{
+			Default: &NodeType{Then: Always("reached")},
+			Named: map[string]*NodeType{
+				"reached":   {Children: ChildrenByKey("parent")},
+				"forgotten": {Children: ChildrenByKey("parent")},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("it accepted a kind nothing names")
+	}
+	if !strings.Contains(err.Error(), "forgotten") {
+		t.Errorf("the refusal does not name it: %v", err)
+	}
+
+	// Where a row CAN ask for a kind by name, every named kind is reachable and
+	// nothing is dead.
+	if _, err := NewTreeSource(TreeOptions{
+		Source: kin(),
+		Types: NodeTypes{
+			Field:   "kind",
+			Default: &NodeType{Children: ChildrenByKey("parent")},
+			Named:   map[string]*NodeType{"asked for by a row": {}},
+		},
+	}); err != nil {
+		t.Errorf("a kind a row can ask for was refused: %v", err)
+	}
+}
+
+// **A branch may say WHEN it applies**, which is what a files list needs: a
+// `.zip` takes its children from the archive, a `.ini` from its sections, a
+// folder from the listing, and a plain file has none.
+//
+// All four are rows of ONE kind, out of one source, with one column mapping.
+// What differs is decided by the row's own values -- so it is a predicate and
+// not a second kind, and the predicate is a `*Filter` because that is what this
+// library already says a predicate with. `ends name ".zip"` needs nothing new.
+//
+// The alternative that does NOT work is worth naming: the override field would
+// need the filesystem listing to carry `childType: "zipEntries"` as data, and a
+// filesystem has an extension and has never heard of a node type.
+func TestABranchAppliesOnlyWhereItsConditionHolds(t *testing.T) {
+	files := NewListSource([]Row{
+		NewRow(NewInt(1), Record{Named("name", "notes.ini"), Named("in", 0)}),
+		NewRow(NewInt(2), Record{Named("name", "bundle.zip"), Named("in", 0)}),
+		NewRow(NewInt(3), Record{Named("name", "readme.txt"), Named("in", 0)}),
+	})
+	entries := NewListSource([]Row{
+		NewRow(NewInt(10), Record{Named("name", "inside.txt"), Named("archive", 2)}),
+	})
+	sections := NewListSource([]Row{
+		NewRow(NewInt(20), Record{Named("name", "[general]"), Named("file", 1)}),
+		NewRow(NewInt(21), Record{Named("name", "[paths]"), Named("file", 1)}),
+	})
+
+	endsWith := func(suffix string) *Filter {
+		return &Filter{Op: OpEnds, Field: "name", Values: []*Value{NewText(suffix)}}
+	}
+
+	src, err := NewTreeSource(TreeOptions{
+		Source: files,
+		Spec:   &Spec{Sort: []SortLevel{{Field: "name"}}},
+		Types: NodeTypes{
+			Default: &NodeType{Then: []Branch{
+				{Kind: "zipEntries", When: endsWith(".zip")},
+				{Kind: "iniSections", When: endsWith(".ini")},
+			}},
+			Named: map[string]*NodeType{
+				"zipEntries":  {Source: entries, Children: ChildrenByKey("archive")},
+				"iniSections": {Source: sections, Children: ChildrenByKey("file")},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	src.ExpandAll()
+	set, got := wholeTree(t, src)
+	defer set.Close()
+
+	want := "bundle.zip/0 inside.txt/1 notes.ini/0 [general]/1 [paths]/1 readme.txt/0"
+	if got != want {
+		t.Errorf("the files tree reads\n  %s\nwant\n  %s", got, want)
+	}
+
+	// The .txt is a leaf and says so exactly, having met no branch's condition --
+	// which is a statement and not an ignorance.
+	var out treeTook
+	if err := set.Read(&Scope{Count: 100}, &out); err != nil {
+		t.Fatal(err)
+	}
+	for i, f := range out.fields {
+		want := Exactly(0)
+		switch Segment(f.Get("name")) {
+		case "bundle.zip":
+			want = Exactly(1)
+		case "notes.ini":
+			want = Exactly(2)
+		}
+		if got := f.Get("expandable"); !Equal(got, NewInt(int64(want.N))) {
+			t.Errorf("row %d (%s) says %v children, want %v",
+				i, Segment(f.Get("name")), got, want.N)
+		}
+	}
+
+	// And a `.zip` is never asked for ini sections: the condition decides which
+	// question is asked, not which answer is kept.
+	if kinds := src.opt.Types.Beneath("", Node{
+		Key: NewInt(2), Fields: Record{Named("name", "bundle.zip")},
+	}); len(kinds) != 1 || kinds[0] != "zipEntries" {
+		t.Errorf("a .zip's branches are %v, want the archive alone", kinds)
 	}
 }

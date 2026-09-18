@@ -242,31 +242,36 @@ func TestARowThatSaysNothingGetsTheDefault(t *testing.T) {
 		Named: map[string]*NodeType{"windows": {}}}
 	// Beneath(nil, ...) is the top level, whose rows are the default kind.
 
-	if got := types.Beneath(nil, Record{Named("kind", "file")}); got != def {
+	if got := types.Beneath("", Node{Fields: Record{Named("kind", "file")}}); !onlyKind(got, "") {
 		t.Error("a row with no childType field did not get the default")
 	}
 	// `Named(name, nil)` is UNDEFINED and not nil, so it is a row saying
 	// nothing and gets the default -- which is why saying "no children" needs a
 	// value that is actually there.
-	if got := types.Beneath(nil, Record{Named("childType", nil)}); got != def {
+	if got := types.Beneath("", Node{Fields: Record{Named("childType", nil)}}); !onlyKind(got, "") {
 		t.Error("a row whose childType is undefined did not get the default")
 	}
 	// And `false` and `nil` mean no children even where something is registered
 	// under that spelling -- they are a row refusing, not a row naming.
 	saying := NodeTypes{Default: def, Field: "childType",
 		Named: map[string]*NodeType{"false": def, "nil": def}}
-	if got := saying.Beneath(nil, Record{Named("childType", NewNil())}); got != nil {
+	if got := saying.Beneath("", Node{Fields: Record{Named("childType", NewNil())}}); len(got) != 0 {
 		t.Error("a row naming nil got a type")
 	}
-	if got := saying.Beneath(nil, Record{Named("childType", false)}); got != nil {
+	if got := saying.Beneath("", Node{Fields: Record{Named("childType", false)}}); len(got) != 0 {
 		t.Error("a row naming false got the type registered under that spelling")
 	}
-	if got := types.Beneath(nil, Record{Named("childType", false)}); got != nil {
+	if got := types.Beneath("", Node{Fields: Record{Named("childType", false)}}); got != nil {
 		t.Error("a row naming false got a type")
 	}
-	if got := types.Beneath(nil, Record{Named("childType", "windows")}); got != types.Named["windows"] {
+	if got := types.Beneath("", Node{Fields: Record{Named("childType", "windows")}}); !onlyKind(got, "windows") {
 		t.Error("a row naming a registered type did not get it")
 	}
+}
+
+// onlyKind reports that a run of kinds is exactly this one, by name.
+func onlyKind(got []string, want string) bool {
+	return len(got) == 1 && got[0] == want
 }
 
 // **An unknown name is a leaf and not a refusal.** One mistyped field must not
@@ -278,7 +283,7 @@ func TestAnUnknownChildTypeNameIsALeaf(t *testing.T) {
 		Field:   "childType",
 		Named:   map[string]*NodeType{"windows": {}},
 	}
-	if got := types.Beneath(nil, Record{Named("childType", "windoows")}); got != nil {
+	if got := types.Beneath("", Node{Fields: Record{Named("childType", "windoows")}}); len(got) != 0 {
 		t.Errorf("a mistyped name got %v, want a leaf", got)
 	}
 }

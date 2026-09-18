@@ -62,7 +62,7 @@ type NodeType struct {
 	// here rather than on the tree because it is a property of the SOURCE.
 	Standing Standing
 
-	// Then is the kind the rows BENEATH this one are, by name. Empty is the
+	// Then are the kinds the rows BENEATH this one are, by name. Empty is the
 	// default kind, which is what makes a tree of one shape need no names at
 	// all.
 	//
@@ -72,7 +72,52 @@ type NodeType struct {
 	// SOURCE has to carry the view's type names as data. The kinds are the
 	// tree's own business, so the tree says them, and a row speaks up only where
 	// it departs from its kind.
-	Then string
+	//
+	// **It is a LIST because one parent can have two kinds of children.** A host
+	// has applications and it has volumes, out of two entirely different
+	// sources, and neither is a special case of the other. Each branch is asked
+	// for its own children of this parent, and they come back grouped in the
+	// order named -- which is predictable, is what a view usually wants (every
+	// folder, then every file), and asks nothing of the two sources that they
+	// cannot answer. Interleaving them would need a sort field the two sources
+	// share, and nothing says they have one.
+	//
+	// **And each branch may say WHEN it applies**, which is what makes a files
+	// list work: a `.zip` takes its children from the archive, a `.ini` from its
+	// sections, a folder from the listing, and a plain file has none. All four
+	// are rows of one kind, out of one source, with one column mapping -- what
+	// differs is decided by the row's own values, so it is a predicate and not a
+	// second kind.
+	Then []Branch
+}
+
+// A Branch is one kind of thing that hangs off a row, and when it does.
+type Branch struct {
+	// Kind is the node type the children are.
+	Kind string
+
+	// When is a predicate on the PARENT. Nil is always, which is what makes the
+	// unconditional case free -- Match passes a nil filter.
+	//
+	// It is a `*Filter` because that is what this library already says a
+	// predicate with, down to the collation. `ends name ".zip"` needs nothing
+	// new, and the alternative -- a Go function -- could not be written down in
+	// a bundle later.
+	//
+	// **It tests the row's own values and not a field an author added.** The
+	// override field exists for a row announcing something about itself, and
+	// wanting the data to carry the view's vocabulary is what this avoids: a
+	// filesystem listing has an extension and has never heard of a node type.
+	When *Filter
+}
+
+// Always is the unconditional branches, which is the common case said shortly.
+func Always(kinds ...string) []Branch {
+	out := make([]Branch, 0, len(kinds))
+	for _, k := range kinds {
+		out = append(out, Branch{Kind: k})
+	}
+	return out
 }
 
 // A Criterion says which rows are a node's children -- and, where it can, how a
@@ -253,55 +298,115 @@ func (c NodeTypes) Get(name string) *NodeType {
 	return c.Named[name]
 }
 
-// Beneath is the kind of the rows under this one: what its own type says comes
+// Beneath are the kinds of the rows under this one: what its own type says comes
 // next, unless the row itself says otherwise.
 //
 // Four answers, and the middle two are the ones to get right:
 //
 //   - no type at all above, which is the top level: the DEFAULT.
-//   - the field is absent, or undefined, which is a row saying nothing: the kind
+//   - the field is absent, or undefined, which is a row saying nothing: the kinds
 //     its parent's type named. A field a record has not got reads as undefined
 //     everywhere in this library, so "says nothing" and "has not got it" are one
 //     case and must be.
 //   - the field says `false` or `nil`: no children, whatever its siblings do.
-//   - the field names a kind: that one -- or, where nothing is registered under
-//     the name, a leaf.
+//   - the field names a kind: that one alone -- or, where nothing is registered
+//     under the name, a leaf.
 //
 // **An unknown name is a leaf and not a refusal.** One mistyped field must not
 // empty a view, which is the same posture a sort takes towards a field a record
 // has not got.
-func (c NodeTypes) Beneath(of *NodeType, r Record) *NodeType {
-	next := c.Default
-	if of != nil {
-		next = c.Get(of.Then)
-	}
+//
+// A row's override names ONE kind, where a type's Then may name several. A row
+// departing from its kind is saying something unusual about itself, and wanting
+// two unusual things at once has not come up; a type declaring the shape of a
+// tree is the place where several is ordinary.
+// It answers in NAMES rather than in types, because the name is what a reader of
+// the flattened sequence needs: the descent knows a row's kind by construction --
+// whatever the `applications` criterion returned is an application -- and the
+// name is how it says so, in the field the tree writes beside the depth.
+func (c NodeTypes) Beneath(of string, node Node) []string {
+	next := c.chain(of, node)
 	if c.Field == "" {
 		return next
 	}
-	v := r.Get(c.Field)
+	v := node.Fields.Get(c.Field)
 	if v == nil {
 		return next
 	}
 	if v.Kind == NilValue || (v.Kind == BoolValue && !v.Bool) {
 		return nil
 	}
-	return c.Named[Segment(v)]
+	if name := Segment(v); c.Named[name] != nil {
+		return []string{name}
+	}
+	return nil
+}
+
+// chain is the kinds this one says come beneath it, dropping the branches whose
+// condition this row does not meet -- and the default kind where it says
+// nothing.
+//
+// The default kind's own name is empty, which is what makes a tree of one shape
+// need no names at all -- and what a view with one mapping reads back.
+func (c NodeTypes) chain(of string, node Node) []string {
+	t := c.Get(of)
+	if t == nil || len(t.Then) == 0 {
+		return []string{""}
+	}
+	out := make([]string, 0, len(t.Then))
+	for _, b := range t.Then {
+		if c.Get(b.Kind) == nil {
+			continue
+		}
+		if !Match(node.Key, node.Fields, b.When) {
+			continue
+		}
+		out = append(out, b.Kind)
+	}
+	return out
 }
 
 // Check refuses a set that cannot be used, which is a configuration mistake and
 // is worth finding when the tree is built rather than when a row is drawn.
-// chains reports whether any type names another, which is how a tree declares a
-// run of kinds without a row having to carry one.
-func (c NodeTypes) chains() bool {
-	if c.Default != nil && c.Default.Then != "" {
-		return true
-	}
-	for _, t := range c.Named {
-		if t != nil && t.Then != "" {
-			return true
+// reachable is every kind a descent could arrive at through Then alone, walked
+// from the default.
+//
+// It is a walk and not a "does anything chain at all", which is what the first
+// version asked -- and that was too loose to catch the mistake it existed for: a
+// tree naming two kinds and a Then reaching only one of them passed, and the
+// other was silently dead. Asking whether SOME chain exists is not asking
+// whether THIS kind is on one.
+func (c NodeTypes) reachable() map[string]bool {
+	seen := map[string]bool{}
+	var walk func(t *NodeType)
+	walk = func(t *NodeType) {
+		if t == nil {
+			return
+		}
+		for _, b := range t.Then {
+			if seen[b.Kind] {
+				continue
+			}
+			seen[b.Kind] = true
+			walk(c.Named[b.Kind])
 		}
 	}
-	return false
+	walk(c.Default)
+	return seen
+}
+
+// chainOk refuses a Then that names a kind nothing is registered under.
+func (c NodeTypes) chainOk(who string, t *NodeType) error {
+	if t == nil {
+		return nil
+	}
+	for _, b := range t.Then {
+		if c.Named[b.Kind] == nil {
+			return fmt.Errorf("%s says its children are %q, "+
+				"and nothing is registered under that name", who, b.Kind)
+		}
+	}
+	return nil
 }
 
 func (c NodeTypes) Check() error {
@@ -311,22 +416,26 @@ func (c NodeTypes) Check() error {
 	if c.Default == nil {
 		return fmt.Errorf("node types: no default, and the top level's rows are of it")
 	}
-	// A named type is reachable through a Then or through the override field.
-	// Named types with neither are dead configuration and are worth saying so.
-	if c.Field == "" && len(c.Named) > 0 && !c.chains() {
-		return fmt.Errorf("node types: %d named, and nothing names them -- "+
-			"no Then reaches one and no field lets a row ask for one",
-			len(c.Named))
-	}
+	// Every Then must name something. This is configuration, unlike a ROW naming
+	// a kind, which is data and reads as a leaf.
 	for name, t := range c.Named {
-		if t != nil && t.Then != "" && c.Named[t.Then] == nil {
-			return fmt.Errorf("the type %q says its children are %q, "+
-				"and nothing is registered under that name", name, t.Then)
+		if err := c.chainOk(fmt.Sprintf("the type %q", name), t); err != nil {
+			return err
 		}
 	}
-	if c.Default != nil && c.Default.Then != "" && c.Named[c.Default.Then] == nil {
-		return fmt.Errorf("the default type says its children are %q, "+
-			"and nothing is registered under that name", c.Default.Then)
+	if err := c.chainOk("the default type", c.Default); err != nil {
+		return err
+	}
+	// And every named kind must be namABLE: on a Then chain from the default, or
+	// asked for by a row where the override field exists at all.
+	if c.Field == "" {
+		can := c.reachable()
+		for name := range c.Named {
+			if !can[name] {
+				return fmt.Errorf("the type %q is named by nothing -- "+
+					"no Then reaches it and no field lets a row ask for it", name)
+			}
+		}
 	}
 	if c.Default != nil {
 		if err := c.Default.Standing.Check(); err != nil {

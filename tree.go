@@ -57,6 +57,16 @@ type TreeFields struct {
 	Path       string // where it stands, empty where the standing builds no path
 	Expandable string // how many children: a number, or a floor, or undefined
 	State      string // `closed`, `open` or `openAll`, as a symbol
+
+	// Kind is the NAME of the node type this row is, as a symbol, and empty for
+	// the default kind.
+	//
+	// **This is how a reader tells one kind of row from another**, and nothing
+	// else can: the descent knows a row's kind by construction -- whatever the
+	// `applications` criterion returned out of the applications source is an
+	// application -- and this is where it says so. A view holding a column
+	// mapping per kind needs exactly this to know which mapping a row takes.
+	Kind string
 }
 
 // TreeFieldsDefault is what a tree writes where the caller says nothing.
@@ -65,6 +75,7 @@ var TreeFieldsDefault = TreeFields{
 	Path:       "path",
 	Expandable: "expandable",
 	State:      "state",
+	Kind:       "kind",
 }
 
 func (f TreeFields) orElse(d TreeFields) TreeFields {
@@ -79,6 +90,9 @@ func (f TreeFields) orElse(d TreeFields) TreeFields {
 	}
 	if f.State == "" {
 		f.State = d.State
+	}
+	if f.Kind == "" {
+		f.Kind = d.Kind
 	}
 	return f
 }
@@ -287,7 +301,7 @@ func (v *treeDataSet) build() error {
 	// The top level's rows are of the default kind, read out of the tree's own
 	// source by the tree's own spec.
 	top := v.tree.opt.Types.Default
-	err := d.level(top, v.tree.opt.Source, v.tree.opt.Spec, top.Standing,
+	err := d.level("", v.tree.opt.Source, v.tree.opt.Spec, top.Standing,
 		Node{}, 0, nil, nil)
 
 	v.mu.Lock()
@@ -444,8 +458,10 @@ func (d *descent) from(nt *NodeType) *NodeType {
 // keyed differently on purpose: a mark segment is a path where there is one, and
 // a revisit is counted on the record's IDENTITY always -- a cycle appends a
 // segment each lap, so the path is the thing GROWING and cannot be what notices.
-func (d *descent) level(nt *NodeType, src Source, spec *Spec, st Standing,
+func (d *descent) level(kind string, src Source, spec *Spec, st Standing,
 	above Node, depth int, chain []string, seen []standingAt) error {
+
+	nt := d.tree.opt.Types.Get(kind)
 
 	spec = d.withShallow(spec)
 	set, err := src.Open(spec)
@@ -475,22 +491,44 @@ func (d *descent) level(nt *NodeType, src Source, spec *Spec, st Standing,
 
 		// The revisit budget governs DESCENT and not emission: a node standing
 		// on its own path is still drawn, it is simply not expandable.
-		next := d.tree.opt.Types.Beneath(nt, fields)
+		next := d.tree.opt.Types.Beneath(kind, node)
 		here := standingAt{from: d.from(nt), key: Key(id)}
 		looped := laps(seen, here) > d.tree.opt.Revisits
 
-		children := d.reach(next, node, looped)
-		d.emit(node, depth, d.tree.mark.Mark(mine...), children)
+		// How many children, over ALL the kinds beneath this row. RecordCount.And
+		// sums and degrades exactness, so a kind that cannot count leaves the
+		// whole figure a floor rather than making the others a lie.
+		//
+		// **It starts at exactly NONE and not at unknown.** A row that met no
+		// branch's condition has nowhere for children to come from, and that is a
+		// statement rather than an ignorance -- the same answer a kind with no
+		// criterion gives, arrived at from the other side. Starting at Unknown
+		// drew a live twisty on every leaf of a conditional tree.
+		children := Exactly(0)
+		for _, name := range next {
+			children = children.And(d.reach(d.tree.opt.Types.Get(name), node, looped))
+		}
+		d.emit(node, kind, depth, d.tree.mark.Mark(mine...), children)
 
 		if looped || children.Exact && children.N == 0 {
 			continue
 		}
-		if !d.tree.mark.Shows(mine...) || next == nil || next.Children.Of == nil {
+		if !d.tree.mark.Shows(mine...) {
 			continue
 		}
-		if err := d.level(next, d.under(next), next.Children.Of(node), next.Standing,
-			node, depth+1, mine, append(seen, here)); err != nil {
-			return err
+		// **One parent, one level per kind beneath it, grouped in the order the
+		// type named them.** Every folder then every file, or every application
+		// then every volume: predictable, and asking nothing of two sources that
+		// they cannot answer.
+		for _, name := range next {
+			below := d.tree.opt.Types.Get(name)
+			if below == nil || below.Children.Of == nil {
+				continue
+			}
+			if err := d.level(name, d.under(below), below.Children.Of(node),
+				below.Standing, node, depth+1, mine, append(seen, here)); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -625,12 +663,12 @@ func (d *descent) under(nt *NodeType) Source {
 //
 // The tree's WIN on a collision, because a view cannot draw without them -- and
 // that is why their names are the caller's to move.
-func (d *descent) emit(of Node, depth int, state Mark, children RecordCount) {
+func (d *descent) emit(of Node, kind string, depth int, state Mark, children RecordCount) {
 	f := d.tree.opt.Fields
-	out := make(Record, 0, len(of.Fields)+4)
+	out := make(Record, 0, len(of.Fields)+5)
 	for _, m := range of.Fields {
 		switch m.Name {
-		case f.Depth, f.Path, f.Expandable, f.State:
+		case f.Depth, f.Path, f.Expandable, f.State, f.Kind:
 		default:
 			out = append(out, m)
 		}
@@ -638,7 +676,8 @@ func (d *descent) emit(of Node, depth int, state Mark, children RecordCount) {
 	out = append(out,
 		Named(f.Depth, depth),
 		Named(f.Path, of.Path),
-		Named(f.State, NewSymbol(state.String())))
+		Named(f.State, NewSymbol(state.String())),
+		Named(f.Kind, NewSymbol(kind)))
 	if children.Exact || children.N > 0 {
 		out = append(out, Named(f.Expandable, int(children.N)))
 	} else {

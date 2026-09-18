@@ -120,6 +120,47 @@ The top level's rows are the DEFAULT kind, which is why there has to be one, and
 why how a top-level row says where it stands is the type's rather than being said
 twice.
 
+### What hangs off a row is a list of branches
+
+**One parent can have two kinds of children.** A host has applications and it has
+volumes, out of two entirely different sources, and neither is a special case of
+the other. So `Then` is a list: each branch is asked for its own children of this
+parent, and they come back grouped in the order named — every application, then
+every volume. Predictable, what a view usually wants, and asking nothing of the
+two sources that they cannot answer. Interleaving them would need a sort field
+the two share, and nothing says they have one.
+
+**Nothing has to distinguish the kinds**, which is the nicest part. Each branch
+carries its own criterion and its own source, so the kind of a row that comes
+back is known *by construction*: whatever `applications` returned out of the
+applications source is an application. No field to match on, no name reserved in
+the data, and no way for the data to be wrong about it. What the tree does have
+to do is SAY so — every row carries the name of its kind in a field, because
+otherwise a view holding a mapping per kind could not tell which mapping a row
+takes.
+
+**And a branch may say when it applies.** A files list is the case that settles
+it: a `.zip` takes its children from the archive, a `.ini` from its sections, a
+folder from the listing, and a plain file has none. All four are rows of ONE kind,
+out of one source, with one column mapping — what differs is decided by the row's
+own values. So a branch carries a predicate on the parent, spelled as a `*Filter`
+because that is what this library already says a predicate with: `ends name
+".zip"` needs nothing new, and it can be written down in a bundle later where a
+Go function could not.
+
+The two answers that do NOT work are worth naming. Listing both kinds
+unconditionally is *correct but blunt* — a `.ini` has no zip entries, so the
+wrong question returns nothing — but it leans on the child sources being keyed so
+that an accident saves it, and it cannot say "a plain file has nothing". And the
+override field would need the filesystem listing to carry `childType:
+"zipEntries"` as data, which is the very thing moving the kinds into the view
+avoided: a filesystem has an extension and has never heard of a node type.
+
+A row meeting no branch's condition has **exactly no** children rather than an
+unknown number. It has nowhere for them to come from, and that is a statement;
+starting the count at unknown drew a live twisty on every leaf of a conditional
+tree, which is how this was found.
+
 Finding the children of a node is still one predicate, most of the time:
 
 | | | |
