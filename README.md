@@ -114,6 +114,9 @@ It's a sibling to the rest of the line: **Mew** (text editor), **PurfecTerm**
 - [`docs/ordering.md`](docs/ordering.md) — the comparison and membership rules,
   which two holders of one sequence have to compute the same way without
   conferring.
+- [`docs/trees.md`](docs/trees.md) — a design conversation, nothing built: a
+  tree as a source, presenting the rows that are visible flat, so that a
+  scrollbar, a thumb drag and a cache work over one without knowing it is one.
 
 ## Use
 
