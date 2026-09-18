@@ -262,7 +262,9 @@ func TestASourceThatCannotSeekSaysWhereItActuallyStarted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	set, err := left.Open(&Spec{})
+	// SORTED, so the includes interleave by value and no arithmetic turns a
+	// position in the whole into a position in each part.
+	set, err := left.Open(&Spec{Sort: []SortLevel{{Field: "n"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +291,7 @@ func TestTheLoopStopsAgainstASourceThatCannotSeek(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	set, err := c.Open(&Spec{})
+	set, err := c.Open(&Spec{Sort: []SortLevel{{Field: "n"}}})
 	if err != nil {
 		t.Fatal(err)
 	}

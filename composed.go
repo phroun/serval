@@ -25,6 +25,7 @@ package serval
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -627,7 +628,11 @@ func (s *composedSet) Read(sc *Scope, out Sink) error {
 	}
 
 	g := &gathering{set: s, want: sc, out: out, levels: s.levels}
-	g.begin = startFrom(sc, s.placed, s.RecordCount())
+	shares, begin, shared := s.share(sc)
+	if !shared {
+		begin = startFrom(sc, s.placed, s.RecordCount())
+	}
+	g.begin = begin
 	if sc.Reversed {
 		g.levels = Reverse(s.levels)
 	}
@@ -640,7 +645,11 @@ func (s *composedSet) Read(sc *Scope, out Sink) error {
 	// Asked for outside the lock: an include whose records are here answers
 	// inside the call, and would reach for a lock this one was already holding.
 	for i, p := range s.parts {
-		if err := p.set.Read(s.ask(sc, after[i]), g.lane(i)); err != nil {
+		share := 0
+		if shares != nil {
+			share = shares[i]
+		}
+		if err := p.set.Read(s.ask(sc, after[i], share), g.lane(i)); err != nil {
 			g.failed(i, err)
 		}
 	}
@@ -678,8 +687,20 @@ func (s *composedSet) resume(id *Value) ([]*Value, error) {
 // that record crossed is the record it gave BEFORE it, so handing that down as
 // a stop would cut the include one record short. The merge settles it here
 // instead, where every record's identity in this sequence is in hand.
-func (s *composedSet) ask(sc *Scope, after *Value) *Scope {
-	return &Scope{After: after, Count: sc.Count, Reversed: sc.Reversed}
+func (s *composedSet) ask(sc *Scope, after *Value, from int) *Scope {
+	switch {
+	case after != nil || from == 0:
+		// Nothing was shared out, or this include starts where it would have
+		// started anyway. A nil After and a From of nought are the same thing.
+		return &Scope{After: after, Count: sc.Count, Reversed: sc.Reversed}
+	case from < 0:
+		// Wholly on the far side of the place asked for: it has nothing to say
+		// about this scope, and asking it for records nobody will read is work
+		// nobody wants done.
+		return &Scope{Count: 0, Reversed: sc.Reversed}
+	default:
+		return &Scope{From: from, Count: sc.Count, Reversed: sc.Reversed}
+	}
 }
 
 // position is where something sits in this sequence: a value for each step,
@@ -1076,4 +1097,102 @@ func (g *gathering) close() {
 		out.First = g.begin
 	}
 	g.out.Done(out)
+}
+
+// blocks reports whether this sequence lays each include's records out in one
+// unbroken run.
+//
+// It does exactly when the spec names no sort. The levels are then the
+// include's name and the child's own identity, so every record of one include
+// falls before every record of the next and the sequence is the includes end to
+// end, in the order their NAMES put them.
+//
+// Name a sort and they interleave by value instead, and there is no longer any
+// arithmetic that turns a position in the whole into a position in each part.
+func (s *composedSet) blocks() bool { return len(s.spec.Sort) == 0 }
+
+// share hands a position out to the includes: where each of them starts so that
+// the merge begins at that place in the sequence, and the place it will
+// actually begin.
+//
+// **Exact or not at all.** Where the includes are blocks and every one of them
+// can count itself, the position falls in exactly one include and the rest
+// either start at an end or send nothing -- and the answer is a true run of the
+// sequence beginning where it was asked to. Anything less than that is refused
+// here rather than approximated, because the approximation is not a window a
+// little off: it is a window with HOLES.
+//
+// A composition sorted by a field interleaves its includes by value, so giving
+// each of them the same fraction of its own records starts them at points that
+// are not the same point. Includes 1,2,3 and 100,200,300 merge to six records;
+// asked to start at the fourth, halving each gives 2,3,200,300 -- which begins
+// at the second record, skips the fourth entirely, and reports neither. A
+// reader cannot correct what it cannot see, so this does not offer it.
+func (s *composedSet) share(sc *Scope) ([]int, RecordCount, bool) {
+	if sc == nil || sc.From == 0 || !s.blocks() {
+		return nil, Unknown(), false
+	}
+
+	// Their order in the SEQUENCE, which their names decide, and not the order
+	// they were declared in.
+	order := make([]int, len(s.parts))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool {
+		return s.parts[order[a]].name < s.parts[order[b]].name
+	})
+
+	counts := make([]int, len(s.parts))
+	total := 0
+	for i, p := range s.parts {
+		c := CountOf(p.set)
+		if !c.Exact {
+			// A block whose length is a floor leaves every boundary after it a
+			// guess, and a guess is what this does not deal in.
+			return nil, Unknown(), false
+		}
+		counts[i] = c.N
+		total += c.N
+	}
+	if total == 0 {
+		return nil, Unknown(), false
+	}
+
+	from := sc.From
+	if from < 0 {
+		from = 0
+	}
+	if from >= total {
+		from = total - 1
+	}
+
+	// Which include holds that place, and where the others stand in relation to
+	// it. skip says send nothing: an include wholly on the far side of the
+	// place asked for has nothing in this scope's way.
+	const skip = -1
+	at := make([]int, len(s.parts))
+	run := 0
+	for _, i := range order {
+		beg, end := run, run+counts[i]
+		switch {
+		case from >= end: // wholly before the place
+			at[i] = skip
+			if sc.Reversed {
+				// Walking back it is wholly in the way, and starts at its own
+				// end -- which is where a reversed scope naming no position
+				// starts anyway, so it is asked for nothing in particular.
+				at[i] = 0
+			}
+		case from < beg: // wholly after it
+			at[i] = 0
+			if sc.Reversed {
+				at[i] = skip
+			}
+		default:
+			at[i] = from - beg
+		}
+		run = end
+	}
+	return at, Exactly(from), true
 }
