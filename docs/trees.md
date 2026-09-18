@@ -1,15 +1,15 @@
 # A tree as a source
 
 > **Status: built, over records that are here.** `marks.go` is the expansion,
-> `treepath.go` is `Standing` — the three readings — `treechild.go` is
-> `ChildType` and its criteria, and `tree.go` is `TreeSource`.
+> `treepath.go` is `Standing` — the three readings — `nodetype.go` is
+> `NodeType` and its criteria, and `tree.go` is `TreeSource`.
 >
 > **The flattening is eager**: opening a data set walks every visible row and
 > holds it, which makes the count, the positions and `From` all exact, and which
 > is right for records in hand. A source that must be ASKED wants the window and
 > not the whole, and that is the next piece rather than a different design — the
 > same interface, answered lazily. **The census IS wired in**: a criterion
-> carries the three parts of one, and a tree takes a single census per child type
+> carries the three parts of one, and a tree takes a single census per node type
 > that answers every twisty in it.
 >
 > Where building changed a decision, it says so and the decision has been
@@ -96,10 +96,31 @@ It is the selection's shape again — *everything, except these named ones* — 
 hierarchical. Two mechanisms with one idea behind them is worth having on
 purpose, and both places should say so.
 
-## What a child is
+## What a kind of row is
 
-A **child type** is a source and a way of deriving a `Spec` from the parent
-record. Most of them are one predicate:
+A **node type** is a KIND OF ROW: where rows of that kind come from, how one says
+where it stands, what kind the rows beneath it are, and — for whatever is drawing
+it — what fills each of a view's columns.
+
+It was called a CHILD type while the only thing it described was somebody's
+children, and that was the parent's vantage point rather than the thing's own. A
+tree's parents are of a kind too, and a column mapping settles it: which field
+fills which column is about what a row IS, not about what hangs off it.
+
+**And the rename earned its keep immediately.** While a type described children,
+a chain of kinds could only be declared in the DATA: host → application → window
+needed every host row to say `applications` and every application row to say
+`windows`, which means the applications source carries the view's vocabulary.
+Now a type says what comes next (`Then`), the chain is the tree's own business,
+and a row speaks up only where it departs from its kind — a mount point under a
+folder, an alias, a graft. The field on a row is an OVERRIDE and no longer the
+only way to say anything.
+
+The top level's rows are the DEFAULT kind, which is why there has to be one, and
+why how a top-level row says where it stands is the type's rather than being said
+twice.
+
+Finding the children of a node is still one predicate, most of the time:
 
 | | | |
 |---|---|---|
@@ -176,12 +197,12 @@ A type naming the same source as the top level makes a hierarchy nested inside
 one body of records, by those same rules all the way down. A type naming a
 different source grafts one body of records under another.
 
-There is a **default child type**, and a row may carry a field naming a
+There is a **default node type**, and a row may carry a field naming a
 different one — or naming none, which makes it a leaf whatever its siblings do.
 That is what lets one tree mix kinds: a host whose children are applications,
 an application whose children are windows, read out of three different places.
 
-**A child type is a Go function from a record to a Spec, not a small language.**
+**A node type is a Go function from a record to a Spec, not a small language.**
 Two or three constructors cover the shapes above. A language for saying this
 belongs with bundles authoring trees, which is a real thing to want later and a
 parser to write when something needs it rather than now.
@@ -225,7 +246,7 @@ to it — which is what jumping straight to a node needs and what a deep filter
 needs, and which is the only thing the other two buy. Derived is the mechanism;
 the others are shortcuts past it.
 
-**Which reading applies is the CHILD TYPE's, not the tree's.** A child type
+**Which reading applies is the CHILD TYPE's, not the tree's.** A node type
 already names a source, and how a row's position is read is a property of that
 source rather than of the tree holding it. Treating it as one setting for the
 whole tree was an accident of writing the single-source case down first.
@@ -324,7 +345,7 @@ already decided somewhere else — which is the useful finding, because a graft
 turns out to need no mechanism of its own.
 
 **Capability degrades at the boundary, not for the tree.** A reading belongs to
-the child type, so a tree that is addresses at the top and edges beneath can
+the node type, so a tree that is addresses at the top and edges beneath can
 still name a node in its upper reaches without walking to it, and cannot beneath.
 The weakest link governs what is possible BELOW it and nothing above. That is the
 right answer rather than the convenient one: the alternative is a tree that drops
@@ -339,7 +360,7 @@ rather than a fallback for odd data.
 
 **Expandability at a graft is a count, not a read.** Decision 7 puts the field on
 the parent row, and across a graft that asks a row in one source to know
-something about another. Nobody will author that correctly. But the child type
+something about another. Nobody will author that correctly. But the node type
 produces a `Spec`, and `CountOf` answers a Spec without reading a record: `Open`,
 count, `Close`. So three degrees, in the spirit of blank, placed and filled:
 
@@ -352,7 +373,7 @@ count, `Close`. So three degrees, in the spirit of blank, placed and filled:
 A count per visible row is a real cost over a source that must be asked, and
 `docs/census.md` is how a whole page of them becomes one question.
 
-**A child type may change the SORT, and this is free.** It produces a whole
+**A node type may change the SORT, and this is free.** It produces a whole
 `Spec`, and a Spec is a source, a filter and a sort. Windows in z-order under
 applications in name order needs nothing added. Worth writing down only because
 a capability nobody notices gets reinvented.
@@ -438,7 +459,7 @@ about the four reasons is short of what a tree needs; one field is.
 
 ## Cycles are a small budget
 
-A child type keyed on a prefix can make a node its own descendant. Symlink loops
+A node type keyed on a prefix can make a node its own descendant. Symlink loops
 do it, a `parent` column with a bad row does it, and a graft that points back at
 its own top does it on purpose.
 
@@ -503,7 +524,7 @@ same eagerness, carrying the same warning, and no new one.
    is cheap because wrapping is all it is. On the data set instead, two data
    sets over one spec would disagree about what the sequence contains, and "the
    same three name the same sequence" is load-bearing.
-4. A child type is a function from record to `Spec`, with constructors.
+4. A node type is a function from record to `Spec`, with constructors.
 5. A record keeps its identity; the PATH is a separate field — its container
    plus its name, read whole, or derived by descending — with a delimiter the
    caller chooses, and field names the caller gives. Identifying rows by path
@@ -516,7 +537,7 @@ same eagerness, carrying the same warning, and no new one.
    path ends.
    **And a path is optional entirely** — an adjacency list of `id` and `parent`
    is a tree with no delimiter, no address field and no string built anywhere.
-   **The reading belongs to the CHILD TYPE**, because a child type names a source
+   **The reading belongs to the CHILD TYPE**, because a node type names a source
    and a reading is a property of a source; derived is the mechanism and the
    other two are shortcuts past it, so capability degrades at a graft and not for
    the whole tree.
@@ -527,7 +548,7 @@ same eagerness, carrying the same warning, and no new one.
    time -- so `undefined` or `false` is a leaf, `true` is children of unknown
    number, and a number is that many. Where the row cannot say — which is every
    graft, a row in one source having no business knowing about another — the
-   child type's `Spec` is counted rather than read, and `CountOf` answering
+   node type's `Spec` is counted rather than read, and `CountOf` answering
    `Unknown()` is the third degree: draw the twisty and find out on opening. A
    census turns a page of those counts into one question.
 8. **A sort naming a field a record has not got is not refused.** It reads as
@@ -544,8 +565,8 @@ same eagerness, carrying the same warning, and no new one.
    record's identity rather than on the path, and clamped rather than refused.
    Nothing hangs, because reading is bounded by the scope and counting is allowed
    to answer `AtLeast`. One budget for the tree, not one per graft.
-11. **A graft needs no mechanism of its own.** The reading is the child type's,
-   the sort is the child type's, the mark key and the revisit count are qualified
+11. **A graft needs no mechanism of its own.** The reading is the node type's,
+   the sort is the node type's, the mark key and the revisit count are qualified
    by which source they mean, an unknown child-type name is a leaf, and
    expandability is a count. Every one of those is a rule stated for another
    reason, holding here.

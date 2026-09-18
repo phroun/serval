@@ -49,7 +49,7 @@ func treeOf(t *testing.T, o TreeOptions) *TreeSource {
 		}}
 	}
 	if o.Types.Default == nil && o.Types.Named == nil {
-		o.Types = ChildTypes{Default: &ChildType{Children: ChildrenByKey("parent")}}
+		o.Types = NodeTypes{Default: &NodeType{Children: ChildrenByKey("parent")}}
 	}
 	src, err := NewTreeSource(o)
 	if err != nil {
@@ -247,7 +247,7 @@ func TestEachLevelCarriesItsOwnSort(t *testing.T) {
 			Filter: &Filter{Op: OpEq, Field: "parent", Values: []*Value{nil}},
 			Sort:   down,
 		},
-		Types: ChildTypes{Default: &ChildType{
+		Types: NodeTypes{Default: &NodeType{
 			Children: Sorted(ChildrenByKey("parent"), down...),
 		}},
 	})
@@ -357,10 +357,9 @@ func TestARowMaySayHowManyChildrenItHas(t *testing.T) {
 // carry theirs.
 func TestATreeOverLocationsKeysItsMarksByPath(t *testing.T) {
 	src, err := NewTreeSource(TreeOptions{
-		Source:   folders(),
-		Spec:     &Spec{Filter: &Filter{Op: OpEq, Field: "location", Values: []*Value{NewText("/")}}},
-		Standing: here,
-		Types: ChildTypes{Default: &ChildType{
+		Source: folders(),
+		Spec:   &Spec{Filter: &Filter{Op: OpEq, Field: "location", Values: []*Value{NewText("/")}}},
+		Types: NodeTypes{Default: &NodeType{
 			Children: here.ChildrenByLocation("location"),
 			Standing: here,
 		}},
@@ -453,7 +452,7 @@ func TestARevisitBudgetIsClamped(t *testing.T) {
 
 // --- mixed descent ------------------------------------------------------
 
-// **One tree, several shapes.** A row names a different child type, and its
+// **One tree, several shapes.** A row names a different node type, and its
 // children come out of a different source entirely -- which is the thing the
 // whole child-type mechanism exists for.
 func TestARowMayNameAChildTypeInAnotherSource(t *testing.T) {
@@ -469,10 +468,10 @@ func TestARowMayNameAChildTypeInAnotherSource(t *testing.T) {
 	src, err := NewTreeSource(TreeOptions{
 		Source: apps,
 		Spec:   &Spec{},
-		Types: ChildTypes{
+		Types: NodeTypes{
 			Field:   "kind",
-			Default: &ChildType{Children: ChildrenByKey("parent")},
-			Named: map[string]*ChildType{
+			Default: &NodeType{Children: ChildrenByKey("parent")},
+			Named: map[string]*NodeType{
 				"windows": {Source: windows, Children: ChildrenByKey("app")},
 			},
 		},
@@ -714,7 +713,7 @@ func TestOneCensusAnswersEveryTwisty(t *testing.T) {
 		src := treeOf(t, TreeOptions{
 			Source: watched{wide(n), &opens},
 			Spec:   &Spec{Filter: &Filter{Op: OpEq, Field: "parent", Values: []*Value{nil}}},
-			Types:  ChildTypes{Default: &ChildType{Children: by}},
+			Types:  NodeTypes{Default: &NodeType{Children: by}},
 		})
 		src.ExpandAll()
 		set, got := wholeTree(t, src)
@@ -758,7 +757,7 @@ func TestACensusGivesTheSameAnswersAsCounting(t *testing.T) {
 
 	saw := func(by Criterion) []string {
 		src := treeOf(t, TreeOptions{
-			Types: ChildTypes{Default: &ChildType{Children: by}},
+			Types: NodeTypes{Default: &NodeType{Children: by}},
 		})
 		src.ExpandAll()
 		set, err := src.Open(nil)
@@ -811,10 +810,9 @@ func TestASubtreeCriterionTakesNoCensus(t *testing.T) {
 	}
 	// And it still works, by counting.
 	src, err := NewTreeSource(TreeOptions{
-		Source:   folders(),
-		Spec:     &Spec{Filter: &Filter{Op: OpEq, Field: "location", Values: []*Value{NewText("/")}}},
-		Standing: here,
-		Types:    ChildTypes{Default: &ChildType{Children: sub, Standing: here}},
+		Source: folders(),
+		Spec:   &Spec{Filter: &Filter{Op: OpEq, Field: "location", Values: []*Value{NewText("/")}}},
+		Types:  NodeTypes{Default: &NodeType{Children: sub, Standing: here}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -865,7 +863,7 @@ func TestHalfACensusIsRefused(t *testing.T) {
 	half.Group = nil
 	_, err := NewTreeSource(TreeOptions{
 		Source: kin(),
-		Types:  ChildTypes{Default: &ChildType{Children: half}},
+		Types:  NodeTypes{Default: &NodeType{Children: half}},
 	})
 	if err == nil {
 		t.Fatal("it accepted a criterion with half a census on it")
@@ -895,5 +893,159 @@ func TestTheCensusCountsWhatTheLevelWouldShow(t *testing.T) {
 	}
 	if got := out.fields[0].Get("expandable"); !Equal(got, NewInt(0)) {
 		t.Errorf("alpha says %v children with its only one filtered out, want nought", got)
+	}
+}
+
+// --- kinds of row -------------------------------------------------------
+
+// **A chain of kinds declares itself, and no row carries a type name.**
+//
+// This is what the rename bought. While a type described somebody's CHILDREN,
+// every host row had to say `applications` and every application row had to say
+// `windows` -- which means the applications source carries the view's vocabulary
+// as data. A type describes a KIND OF ROW and says what kind comes next, so the
+// kinds are the tree's own business and the data is left alone.
+func TestAChainOfKindsDeclaresItself(t *testing.T) {
+	hosts := NewListSource([]Row{
+		NewRow(NewInt(1), Record{Named("name", "a host")}),
+	})
+	apps := NewListSource([]Row{
+		NewRow(NewInt(10), Record{Named("name", "an app"), Named("host", 1)}),
+		NewRow(NewInt(11), Record{Named("name", "another app"), Named("host", 1)}),
+	})
+	windows := NewListSource([]Row{
+		NewRow(NewInt(100), Record{Named("name", "a window"), Named("app", 10)}),
+	})
+
+	src, err := NewTreeSource(TreeOptions{
+		Source: hosts,
+		Spec:   &Spec{},
+		Types: NodeTypes{
+			Default: &NodeType{Then: "applications"},
+			Named: map[string]*NodeType{
+				"applications": {
+					Source:   apps,
+					Children: ChildrenByKey("host"),
+					Then:     "windows",
+				},
+				"windows": {Source: windows, Children: ChildrenByKey("app")},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	src.ExpandAll()
+	set, got := wholeTree(t, src)
+	defer set.Close()
+
+	if want := "a host/0 an app/1 a window/2 another app/1"; got != want {
+		t.Errorf("the chain reads\n  %s\nwant\n  %s", got, want)
+	}
+
+	// Not one record anywhere names a kind. That is the claim.
+	for _, s := range []*ListSource{hosts, apps, windows} {
+		set, err := s.Open(&Spec{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out censusRows
+		if err := set.Read(&Scope{Count: 100}, &out); err != nil {
+			t.Fatal(err)
+		}
+		set.Close()
+		for _, f := range out.fields {
+			for _, m := range f {
+				if m.Name == "kind" || m.Name == "childType" {
+					t.Errorf("a record carries the view's vocabulary: %v", m.Name)
+				}
+			}
+		}
+	}
+}
+
+// And a row still OVERRIDES its kind where it is unusual, which is what the
+// field is for now rather than being the only way to say anything.
+func TestARowOverridesItsChildrensKind(t *testing.T) {
+	elsewhere := NewListSource([]Row{
+		NewRow(NewInt(90), Record{Named("name", "somewhere else"), Named("via", 2)}),
+	})
+	rows := NewListSource([]Row{
+		NewRow(NewInt(1), Record{Named("name", "ordinary")}),
+		NewRow(NewInt(2), Record{Named("name", "a mount point"), Named("kind", "elsewhere")}),
+		NewRow(NewInt(3), Record{Named("name", "a child"), Named("parent", 1)}),
+	})
+
+	src, err := NewTreeSource(TreeOptions{
+		Source: rows,
+		Spec:   &Spec{Filter: &Filter{Op: OpEq, Field: "parent", Values: []*Value{nil}}},
+		Types: NodeTypes{
+			Field:   "kind",
+			Default: &NodeType{Children: ChildrenByKey("parent")},
+			Named: map[string]*NodeType{
+				"elsewhere": {Source: elsewhere, Children: ChildrenByKey("via")},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	src.ExpandAll()
+	set, got := wholeTree(t, src)
+	defer set.Close()
+
+	if want := "ordinary/0 a child/1 a mount point/0 somewhere else/1"; got != want {
+		t.Errorf("with an override the tree reads\n  %s\nwant\n  %s", got, want)
+	}
+}
+
+// A Then naming a kind nothing is registered under is refused where the tree is
+// built. Unlike a ROW naming one -- which is data and reads as a leaf -- this is
+// configuration, and configuration that cannot work is worth finding early.
+func TestAThenNamingNothingIsRefused(t *testing.T) {
+	_, err := NewTreeSource(TreeOptions{
+		Source: kin(),
+		Types:  NodeTypes{Default: &NodeType{Then: "nothing registered"}},
+	})
+	if err == nil {
+		t.Fatal("it accepted a chain that goes nowhere")
+	}
+	if !strings.Contains(err.Error(), "nothing registered") {
+		t.Errorf("the refusal does not name it: %v", err)
+	}
+
+	// And a NAMED type's chain is walked too, not only the default's -- a chain
+	// breaks in the middle as readily as at the start.
+	_, err = NewTreeSource(TreeOptions{
+		Source: kin(),
+		Types: NodeTypes{
+			Default: &NodeType{Then: "middle"},
+			Named: map[string]*NodeType{
+				"middle": {Children: ChildrenByKey("parent"), Then: "the missing end"},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("it accepted a chain that breaks in the middle")
+	}
+	if !strings.Contains(err.Error(), "the missing end") {
+		t.Errorf("the refusal does not name the broken link: %v", err)
+	}
+}
+
+// **The top level's rows are of the default kind**, so there has to be one.
+func TestATreeWithNoDefaultKindIsRefused(t *testing.T) {
+	_, err := NewTreeSource(TreeOptions{
+		Source: kin(),
+		Types: NodeTypes{
+			Field: "kind",
+			Named: map[string]*NodeType{"something": {}},
+		},
+	})
+	if err == nil {
+		t.Fatal("it accepted a tree whose top level is of no kind")
+	}
+	if !strings.Contains(err.Error(), "default") {
+		t.Errorf("the refusal does not say what is missing: %v", err)
 	}
 }

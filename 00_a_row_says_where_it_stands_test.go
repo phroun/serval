@@ -215,9 +215,9 @@ func TestAStandingThatCannotMeanWhatItSaysIsRefused(t *testing.T) {
 	}
 }
 
-// --- child types --------------------------------------------------------
+// --- node types --------------------------------------------------------
 
-// **A child type may order its children differently from its parents**, which
+// **A node type may order its children differently from its parents**, which
 // costs nothing because it produces a whole Spec.
 func TestAChildTypeMayBringItsOwnSort(t *testing.T) {
 	by := Sorted(ChildrenByKey("parent"),
@@ -237,33 +237,34 @@ func TestAChildTypeMayBringItsOwnSort(t *testing.T) {
 // as undefined everywhere here, so "says nothing" and "has not got it" are one
 // case and must be.
 func TestARowThatSaysNothingGetsTheDefault(t *testing.T) {
-	def := &ChildType{Children: ChildrenByKey("parent")}
-	types := ChildTypes{Default: def, Field: "childType",
-		Named: map[string]*ChildType{"windows": {}}}
+	def := &NodeType{Children: ChildrenByKey("parent")}
+	types := NodeTypes{Default: def, Field: "childType",
+		Named: map[string]*NodeType{"windows": {}}}
+	// Beneath(nil, ...) is the top level, whose rows are the default kind.
 
-	if got := types.For(Record{Named("kind", "file")}); got != def {
+	if got := types.Beneath(nil, Record{Named("kind", "file")}); got != def {
 		t.Error("a row with no childType field did not get the default")
 	}
 	// `Named(name, nil)` is UNDEFINED and not nil, so it is a row saying
 	// nothing and gets the default -- which is why saying "no children" needs a
 	// value that is actually there.
-	if got := types.For(Record{Named("childType", nil)}); got != def {
+	if got := types.Beneath(nil, Record{Named("childType", nil)}); got != def {
 		t.Error("a row whose childType is undefined did not get the default")
 	}
 	// And `false` and `nil` mean no children even where something is registered
 	// under that spelling -- they are a row refusing, not a row naming.
-	saying := ChildTypes{Default: def, Field: "childType",
-		Named: map[string]*ChildType{"false": def, "nil": def}}
-	if got := saying.For(Record{Named("childType", NewNil())}); got != nil {
+	saying := NodeTypes{Default: def, Field: "childType",
+		Named: map[string]*NodeType{"false": def, "nil": def}}
+	if got := saying.Beneath(nil, Record{Named("childType", NewNil())}); got != nil {
 		t.Error("a row naming nil got a type")
 	}
-	if got := saying.For(Record{Named("childType", false)}); got != nil {
+	if got := saying.Beneath(nil, Record{Named("childType", false)}); got != nil {
 		t.Error("a row naming false got the type registered under that spelling")
 	}
-	if got := types.For(Record{Named("childType", false)}); got != nil {
+	if got := types.Beneath(nil, Record{Named("childType", false)}); got != nil {
 		t.Error("a row naming false got a type")
 	}
-	if got := types.For(Record{Named("childType", "windows")}); got != types.Named["windows"] {
+	if got := types.Beneath(nil, Record{Named("childType", "windows")}); got != types.Named["windows"] {
 		t.Error("a row naming a registered type did not get it")
 	}
 }
@@ -272,28 +273,28 @@ func TestARowThatSaysNothingGetsTheDefault(t *testing.T) {
 // empty a view, which is the same posture a sort takes towards a field a record
 // has not got.
 func TestAnUnknownChildTypeNameIsALeaf(t *testing.T) {
-	types := ChildTypes{
-		Default: &ChildType{Children: ChildrenByKey("parent")},
+	types := NodeTypes{
+		Default: &NodeType{Children: ChildrenByKey("parent")},
 		Field:   "childType",
-		Named:   map[string]*ChildType{"windows": {}},
+		Named:   map[string]*NodeType{"windows": {}},
 	}
-	if got := types.For(Record{Named("childType", "windoows")}); got != nil {
+	if got := types.Beneath(nil, Record{Named("childType", "windoows")}); got != nil {
 		t.Errorf("a mistyped name got %v, want a leaf", got)
 	}
 }
 
 // And a set that cannot be used is refused where it is built.
 func TestAChildTypeSetIsChecked(t *testing.T) {
-	if err := (ChildTypes{}).Check(); err == nil {
+	if err := (NodeTypes{}).Check(); err == nil {
 		t.Error("a set with no types at all was accepted")
 	}
-	if err := (ChildTypes{
-		Default: &ChildType{},
-		Named:   map[string]*ChildType{"windows": {}},
+	if err := (NodeTypes{
+		Default: &NodeType{},
+		Named:   map[string]*NodeType{"windows": {}},
 	}).Check(); err == nil {
 		t.Error("named types with no field to name them in were accepted")
 	}
-	bad := ChildTypes{Default: &ChildType{Standing: Standing{Location: "d"}}}
+	bad := NodeTypes{Default: &NodeType{Standing: Standing{Location: "d"}}}
 	if err := bad.Check(); err == nil {
 		t.Error("a default type with an unusable standing was accepted")
 	} else if !strings.Contains(err.Error(), "delimiter") {

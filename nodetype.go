@@ -2,7 +2,7 @@ package serval
 
 // What a node's children are.
 //
-// A **child type** is a source and a way of deriving a Spec from the parent
+// A **node type** is a source and a way of deriving a Spec from the parent
 // record. Most of them are one predicate:
 //
 //	its parent by key      eq parent <the parent's key>                 an adjacency list
@@ -27,7 +27,7 @@ package serval
 
 import "fmt"
 
-// A Node is a parent, as a child type sees it: what identifies it, what it
+// A Node is a parent, as a node type sees it: what identifies it, what it
 // holds, and where it stands.
 //
 // The path is here because two of the three criteria are about it, and it is a
@@ -40,27 +40,45 @@ type Node struct {
 	Path   string
 }
 
-// A ChildType says where a node's children live, how to ask for them, and how
-// a row of that source says where it stands.
-type ChildType struct {
-	// Source is where the children are read from. Nil is the tree's own
+// A NodeType is a KIND OF ROW: where rows of that kind come from, how one says
+// where it stands, and what kind the rows beneath it are.
+//
+// It was called a child type while the only thing it described was somebody's
+// children, and the name was the parent's vantage point rather than the thing's
+// own. A tree's parents are of a kind too -- a host row, an application row, a
+// window row -- and anything a VIEW hangs off a type, a column mapping most of
+// all, is about what a row IS and not about what hangs off it.
+type NodeType struct {
+	// Source is where rows of this kind are read from. Nil is the tree's own
 	// source, which is the nested case: a hierarchy inside one body of records.
 	Source Source
 
-	// Children is the question. The zero Criterion makes every node of this
-	// type a leaf, which is a legitimate type for a row to name and is how a
-	// tree says "nothing hangs off this kind".
+	// Children is how rows of this kind are found under a parent. The zero
+	// Criterion makes every node of this type a leaf, which is a legitimate
+	// kind for a row to be and is how a tree says "nothing hangs off this".
 	Children Criterion
 
-	// Standing is how a row of that source says where it stands, and it belongs
+	// Standing is how a row of this kind says where it stands, and it belongs
 	// here rather than on the tree because it is a property of the SOURCE.
 	Standing Standing
+
+	// Then is the kind the rows BENEATH this one are, by name. Empty is the
+	// default kind, which is what makes a tree of one shape need no names at
+	// all.
+	//
+	// **This is what lets a chain declare itself.** Without it, host ->
+	// application -> window needs every host row to carry `applications` and
+	// every application row to carry `windows` -- which means the applications
+	// SOURCE has to carry the view's type names as data. The kinds are the
+	// tree's own business, so the tree says them, and a row speaks up only where
+	// it departs from its kind.
+	Then string
 }
 
 // A Criterion says which rows are a node's children -- and, where it can, how a
 // whole LEVEL of that question is answered at once.
 //
-// The three census parts are here rather than on the child type because they
+// The three census parts are here rather than on the node type because they
 // have to agree with Of and with each other, and a place where three things must
 // agree is a place to put them together. A criterion that cannot be censused
 // leaves them out, and every node is then counted on its own.
@@ -185,8 +203,8 @@ func (st Standing) DescendantsByLocation(field string) Criterion {
 
 // Sorted puts a sort on whatever a criterion produces.
 //
-// **A child type may order its children differently from its parents, and this
-// costs nothing** -- a child type produces a whole Spec, and a Spec is a source,
+// **A node type may order its children differently from its parents, and this
+// costs nothing** -- a node type produces a whole Spec, and a Spec is a source,
 // a filter and a sort. Windows in z-order under applications in name order needs
 // nothing added. It is written down because a capability nobody notices gets
 // reinvented.
@@ -206,44 +224,63 @@ func Sorted(by Criterion, levels ...SortLevel) Criterion {
 	return by
 }
 
-// ChildTypes is the set a tree knows: one default, and any number named.
+// NodeTypes is the set a tree knows: one default, and any number named.
 //
 // **That is what lets one tree mix kinds**: a host whose children are
 // applications, an application whose children are windows, read out of three
 // different places.
-type ChildTypes struct {
+type NodeTypes struct {
 	// Default is what a row that says nothing gets.
-	Default *ChildType
+	Default *NodeType
 
 	// Named are the others, by the name a row uses to ask for one.
-	Named map[string]*ChildType
+	Named map[string]*NodeType
 
-	// Field is the field a row names a different type in. Empty means every
-	// row gets the default, which is the single-shape tree.
+	// Field is the field a row OVERRIDES its children's kind in. Empty means no
+	// row can, and every level takes the kind its parent's type named.
+	//
+	// It is an override and no longer the only way, which is the difference the
+	// rename made: a row says something here when it is unusual -- a mount point
+	// under a folder, an alias, a graft -- and says nothing when it is not.
 	Field string
 }
 
-// For is the type this row's children come from, and nil for a leaf.
+// Get is the type of that name, and the default for an empty one.
+func (c NodeTypes) Get(name string) *NodeType {
+	if name == "" {
+		return c.Default
+	}
+	return c.Named[name]
+}
+
+// Beneath is the kind of the rows under this one: what its own type says comes
+// next, unless the row itself says otherwise.
 //
-// Three answers, and the middle one is the one to get right:
+// Four answers, and the middle two are the ones to get right:
 //
-//   - the field is absent, or undefined, which is a row saying nothing: the
-//     DEFAULT. A field a record has not got reads as undefined everywhere in this
-//     library, so "says nothing" and "has not got it" are one case and must be.
+//   - no type at all above, which is the top level: the DEFAULT.
+//   - the field is absent, or undefined, which is a row saying nothing: the kind
+//     its parent's type named. A field a record has not got reads as undefined
+//     everywhere in this library, so "says nothing" and "has not got it" are one
+//     case and must be.
 //   - the field says `false` or `nil`: no children, whatever its siblings do.
-//   - the field names a type: that one -- or, where nothing is registered under
+//   - the field names a kind: that one -- or, where nothing is registered under
 //     the name, a leaf.
 //
 // **An unknown name is a leaf and not a refusal.** One mistyped field must not
 // empty a view, which is the same posture a sort takes towards a field a record
 // has not got.
-func (c ChildTypes) For(r Record) *ChildType {
+func (c NodeTypes) Beneath(of *NodeType, r Record) *NodeType {
+	next := c.Default
+	if of != nil {
+		next = c.Get(of.Then)
+	}
 	if c.Field == "" {
-		return c.Default
+		return next
 	}
 	v := r.Get(c.Field)
 	if v == nil {
-		return c.Default
+		return next
 	}
 	if v.Kind == NilValue || (v.Kind == BoolValue && !v.Bool) {
 		return nil
@@ -253,13 +290,43 @@ func (c ChildTypes) For(r Record) *ChildType {
 
 // Check refuses a set that cannot be used, which is a configuration mistake and
 // is worth finding when the tree is built rather than when a row is drawn.
-func (c ChildTypes) Check() error {
-	if c.Default == nil && len(c.Named) == 0 {
-		return fmt.Errorf("child types: none given, so every row is a leaf")
+// chains reports whether any type names another, which is how a tree declares a
+// run of kinds without a row having to carry one.
+func (c NodeTypes) chains() bool {
+	if c.Default != nil && c.Default.Then != "" {
+		return true
 	}
-	if c.Field == "" && len(c.Named) > 0 {
-		return fmt.Errorf("child types: %d named, and no field for a row to name one in",
+	for _, t := range c.Named {
+		if t != nil && t.Then != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func (c NodeTypes) Check() error {
+	// **The top level's rows are the default kind**, so there must be one. A
+	// tree whose top level is of no kind cannot say where its rows stand, what
+	// fills a view's columns, or what lies beneath them.
+	if c.Default == nil {
+		return fmt.Errorf("node types: no default, and the top level's rows are of it")
+	}
+	// A named type is reachable through a Then or through the override field.
+	// Named types with neither are dead configuration and are worth saying so.
+	if c.Field == "" && len(c.Named) > 0 && !c.chains() {
+		return fmt.Errorf("node types: %d named, and nothing names them -- "+
+			"no Then reaches one and no field lets a row ask for one",
 			len(c.Named))
+	}
+	for name, t := range c.Named {
+		if t != nil && t.Then != "" && c.Named[t.Then] == nil {
+			return fmt.Errorf("the type %q says its children are %q, "+
+				"and nothing is registered under that name", name, t.Then)
+		}
+	}
+	if c.Default != nil && c.Default.Then != "" && c.Named[c.Default.Then] == nil {
+		return fmt.Errorf("the default type says its children are %q, "+
+			"and nothing is registered under that name", c.Default.Then)
 	}
 	if c.Default != nil {
 		if err := c.Default.Standing.Check(); err != nil {

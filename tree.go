@@ -90,13 +90,11 @@ type TreeOptions struct {
 	Source Source
 	Spec   *Spec
 
-	// Standing is how a row of that source says where it stands. The zero one
-	// builds no path, which is the adjacency list, and then marks are keyed by
-	// identity instead.
-	Standing Standing
-
-	// Types is where children come from, by the name a row asks for one under.
-	Types ChildTypes
+	// Types is what kind each row is. **The top level's rows are the DEFAULT
+	// kind**, so where the top level's rows come from is here and what they ARE
+	// is there -- including how one says where it stands, which used to be said
+	// twice and is now said once, by the type.
+	Types NodeTypes
 
 	// SaysChildren is the field a row uses to say whether it has children and
 	// how many: `undefined` or `false` is a leaf, `true` is children of unknown
@@ -146,15 +144,12 @@ type TreeSource struct {
 // NewTreeSource makes one, and refuses what cannot be used.
 //
 // The checks are configuration and are worth finding here rather than when a row
-// is drawn: a standing that names two readings, named child types with no field
+// is drawn: a standing that names two readings, named node types with no field
 // to name them in, and a sort on the top level, which the next paragraph is
 // about.
 func NewTreeSource(o TreeOptions) (*TreeSource, error) {
 	if o.Source == nil {
 		return nil, fmt.Errorf("tree: no source")
-	}
-	if err := o.Standing.Check(); err != nil {
-		return nil, fmt.Errorf("tree: the top level's %w", err)
 	}
 	if err := o.Types.Check(); err != nil {
 		return nil, fmt.Errorf("tree: %w", err)
@@ -289,7 +284,10 @@ func (v *treeDataSet) rebuild() {
 
 func (v *treeDataSet) build() error {
 	d := &descent{set: v, tree: v.tree}
-	err := d.level(nil, v.tree.opt.Source, v.tree.opt.Spec, v.tree.opt.Standing,
+	// The top level's rows are of the default kind, read out of the tree's own
+	// source by the tree's own spec.
+	top := v.tree.opt.Types.Default
+	err := d.level(top, v.tree.opt.Source, v.tree.opt.Spec, top.Standing,
 		Node{}, 0, nil, nil)
 
 	v.mu.Lock()
@@ -402,10 +400,10 @@ type descent struct {
 	tree *TreeSource
 	rows []treeRow
 
-	// counts is one census per child type, taken when a twisty first needs one
+	// counts is one census per node type, taken when a twisty first needs one
 	// and kept for the rest of this build. A nil value means it was tried and
 	// could not be had.
-	counts map[*ChildType]*Census
+	counts map[*NodeType]*Census
 }
 
 // a standingAt is one node on the path from the root, for the revisit budget.
@@ -414,13 +412,13 @@ type descent struct {
 // and not across sources.** Two grafted sources may each hold a record keyed 3,
 // and without the qualifier they would count as one node standing twice.
 //
-// The source is named by the child type that BROUGHT one, which is what `from`
+// The source is named by the node type that BROUGHT one, which is what `from`
 // works out: the top level and a type that grafts nothing both read the tree's
 // own source, so a record reached either way is one node. Getting that wrong is
 // what the first version of this did, and the cost was a cycle counted as two
 // nodes and given twice the laps.
 type standingAt struct {
-	from *ChildType
+	from *NodeType
 	key  string
 }
 
@@ -432,11 +430,11 @@ type standingAt struct {
 // an unusual enough configuration to be worth a sentence rather than a scheme
 // for comparing sources -- a Source is an interface, and a type that is not
 // comparable would panic on being compared rather than being told off.
-func (d *descent) from(ct *ChildType) *ChildType {
-	if ct == nil || ct.Source == nil {
+func (d *descent) from(nt *NodeType) *NodeType {
+	if nt == nil || nt.Source == nil {
 		return nil
 	}
-	return ct
+	return nt
 }
 
 // level reads one level's rows and, for each that shows, the levels beneath it.
@@ -446,7 +444,7 @@ func (d *descent) from(ct *ChildType) *ChildType {
 // keyed differently on purpose: a mark segment is a path where there is one, and
 // a revisit is counted on the record's IDENTITY always -- a cycle appends a
 // segment each lap, so the path is the thing GROWING and cannot be what notices.
-func (d *descent) level(ct *ChildType, src Source, spec *Spec, st Standing,
+func (d *descent) level(nt *NodeType, src Source, spec *Spec, st Standing,
 	above Node, depth int, chain []string, seen []standingAt) error {
 
 	spec = d.withShallow(spec)
@@ -477,8 +475,8 @@ func (d *descent) level(ct *ChildType, src Source, spec *Spec, st Standing,
 
 		// The revisit budget governs DESCENT and not emission: a node standing
 		// on its own path is still drawn, it is simply not expandable.
-		next := d.tree.opt.Types.For(fields)
-		here := standingAt{from: d.from(ct), key: Key(id)}
+		next := d.tree.opt.Types.Beneath(nt, fields)
+		here := standingAt{from: d.from(nt), key: Key(id)}
 		looped := laps(seen, here) > d.tree.opt.Revisits
 
 		children := d.reach(next, node, looped)
@@ -550,8 +548,8 @@ func (d *descent) withShallow(spec *Spec) *Spec {
 //
 // A count per visible row is a real cost over a source that must be asked, and
 // `docs/census.md` is how a whole page of them becomes one question.
-func (d *descent) reach(ct *ChildType, of Node, looped bool) RecordCount {
-	if looped || ct == nil || ct.Children.Of == nil {
+func (d *descent) reach(nt *NodeType, of Node, looped bool) RecordCount {
+	if looped || nt == nil || nt.Children.Of == nil {
 		return Exactly(0)
 	}
 	if f := d.tree.opt.SaysChildren; f != "" {
@@ -565,10 +563,10 @@ func (d *descent) reach(ct *ChildType, of Node, looped bool) RecordCount {
 			return Exactly(int(v.Int))
 		}
 	}
-	if c := d.census(ct); c != nil {
-		return c.CountOfGroup(ct.Children.Group(of))
+	if c := d.census(nt); c != nil {
+		return c.CountOfGroup(nt.Children.Group(of))
 	}
-	set, err := d.under(ct).Open(d.withShallow(ct.Children.Of(of)))
+	set, err := d.under(nt).Open(d.withShallow(nt.Children.Of(of)))
 	if err != nil {
 		return Unknown()
 	}
@@ -576,7 +574,7 @@ func (d *descent) reach(ct *ChildType, of Node, looped bool) RecordCount {
 	return CountOf(set)
 }
 
-// census is this child type's counts, taken once and kept.
+// census is this node type's counts, taken once and kept.
 //
 // **One census answers every node of a type, not merely every node of a level.**
 // The criterion partitions the whole source by one field, and a level is a
@@ -588,37 +586,37 @@ func (d *descent) reach(ct *ChildType, of Node, looped bool) RecordCount {
 // A type that cannot be censused, or a source that will not take one, is
 // remembered as such: the fallback is a count per node and asking again for
 // every one of them would be worse than not trying.
-func (d *descent) census(ct *ChildType) *Census {
-	if c, tried := d.counts[ct]; tried {
+func (d *descent) census(nt *NodeType) *Census {
+	if c, tried := d.counts[nt]; tried {
 		return c
 	}
 	if d.counts == nil {
-		d.counts = map[*ChildType]*Census{}
+		d.counts = map[*NodeType]*Census{}
 	}
-	d.counts[ct] = nil // tried, and nothing came of it unless the rest succeeds
-	if !ct.Children.counts() {
+	d.counts[nt] = nil // tried, and nothing came of it unless the rest succeeds
+	if !nt.Children.counts() {
 		return nil
 	}
 	// The shallow filter goes on, or the census would count rows the level
 	// itself would not show.
-	set, err := d.under(ct).Open(d.withShallow(ct.Children.Over))
+	set, err := d.under(nt).Open(d.withShallow(nt.Children.Over))
 	if err != nil {
 		return nil
 	}
 	defer set.Close()
-	c, err := CensusOf(set, ct.Children.By)
+	c, err := CensusOf(set, nt.Children.By)
 	if err != nil {
 		return nil
 	}
-	d.counts[ct] = &c
+	d.counts[nt] = &c
 	return &c
 }
 
 // under is where this type's children are read from: its own source, or the
 // tree's where it grafts nothing.
-func (d *descent) under(ct *ChildType) Source {
-	if ct.Source != nil {
-		return ct.Source
+func (d *descent) under(nt *NodeType) Source {
+	if nt.Source != nil {
+		return nt.Source
 	}
 	return d.tree.opt.Source
 }
