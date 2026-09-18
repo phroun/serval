@@ -156,6 +156,14 @@ override field would need the filesystem listing to carry `childType:
 "zipEntries"` as data, which is the very thing moving the kinds into the view
 avoided: a filesystem has an extension and has never heard of a node type.
 
+**The conditions are independent, and that is worth its own test.** The suffix
+form is mutually exclusive by construction — `ends name ".zip"` and `ends name
+".ini"` cannot both hold — so a test written only that way would pass even if the
+branches were exclusive by design rather than by the data. Two separate booleans
+is what proves each condition is asked on its own: a row with `isZip` and `isIni`
+both true takes both sets of children, grouped in branch order, and its child
+count is the sum. Either spelling is a `*Filter`, so both are one mechanism.
+
 A row meeting no branch's condition has **exactly no** children rather than an
 unknown number. It has nowhere for them to come from, and that is a statement;
 starting the count at unknown drew a live twisty on every leaf of a conditional

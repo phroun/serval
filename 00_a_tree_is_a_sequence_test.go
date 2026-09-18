@@ -1247,3 +1247,103 @@ func TestABranchAppliesOnlyWhereItsConditionHolds(t *testing.T) {
 		t.Errorf("a .zip's branches are %v, want the archive alone", kinds)
 	}
 }
+
+// **Two branches on two separate fields, each true on its own** -- and a row
+// where both are true takes BOTH sets of children.
+//
+// This is the case the suffix test above does not reach, and the distinction
+// matters: `ends name ".zip"` and `ends name ".ini"` cannot both hold, so that
+// test would pass even if the branches were mutually exclusive by construction.
+// Two independent booleans is what proves each condition is asked on its own.
+func TestTwoBranchesOnSeparateFieldsBothApply(t *testing.T) {
+	// A row can be a zip, an ini, both, or neither. `both.dat` is a container
+	// that happens to hold sections too, which is contrived and is the point.
+	things := NewListSource([]Row{
+		NewRow(NewInt(1), Record{Named("name", "plain"), Named("seq", 1)}),
+		NewRow(NewInt(2), Record{Named("name", "zippy"), Named("seq", 2),
+			Named("isZip", true)}),
+		NewRow(NewInt(3), Record{Named("name", "config"), Named("seq", 3),
+			Named("isIni", true)}),
+		NewRow(NewInt(4), Record{Named("name", "both"), Named("seq", 4),
+			Named("isZip", true), Named("isIni", true)}),
+	})
+	entries := NewListSource([]Row{
+		NewRow(NewInt(20), Record{Named("name", "an entry"), Named("archive", 2)}),
+		NewRow(NewInt(24), Record{Named("name", "both's entry"), Named("archive", 4)}),
+	})
+	sections := NewListSource([]Row{
+		NewRow(NewInt(30), Record{Named("name", "[a section]"), Named("file", 3)}),
+		NewRow(NewInt(34), Record{Named("name", "[both's section]"), Named("file", 4)}),
+	})
+
+	isTrue := func(field string) *Filter {
+		return &Filter{Op: OpEq, Field: field, Values: []*Value{NewBool(true)}}
+	}
+
+	src, err := NewTreeSource(TreeOptions{
+		Source: things,
+		Spec:   &Spec{Sort: []SortLevel{{Field: "seq"}}},
+		Types: NodeTypes{
+			Default: &NodeType{Then: []Branch{
+				{Kind: "zipEntries", When: isTrue("isZip")},
+				{Kind: "iniSections", When: isTrue("isIni")},
+			}},
+			Named: map[string]*NodeType{
+				"zipEntries":  {Source: entries, Children: ChildrenByKey("archive")},
+				"iniSections": {Source: sections, Children: ChildrenByKey("file")},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	src.ExpandAll()
+	set, got := wholeTree(t, src)
+	defer set.Close()
+
+	// `both` takes its entries AND its sections, grouped in the order the branches
+	// were named.
+	want := "plain/0 zippy/0 an entry/1 config/0 [a section]/1 " +
+		"both/0 both's entry/1 [both's section]/1"
+	if got != want {
+		t.Errorf("the tree reads\n  %s\nwant\n  %s", got, want)
+	}
+
+	// Each condition really is asked on its own: four rows, four different
+	// answers about which branches apply.
+	for _, c := range []struct {
+		name  string
+		row   Record
+		kinds []string
+	}{
+		{"plain", Record{}, nil},
+		{"zippy", Record{Named("isZip", true)}, []string{"zipEntries"}},
+		{"config", Record{Named("isIni", true)}, []string{"iniSections"}},
+		{"both", Record{Named("isZip", true), Named("isIni", true)},
+			[]string{"zipEntries", "iniSections"}},
+	} {
+		got := src.opt.Types.Beneath("", Node{Fields: c.row})
+		if strings.Join(got, " ") != strings.Join(c.kinds, " ") {
+			t.Errorf("%s takes %v, want %v", c.name, got, c.kinds)
+		}
+	}
+
+	// And the count is the SUM across the branches that applied.
+	var out treeTook
+	if err := set.Read(&Scope{Count: 100}, &out); err != nil {
+		t.Fatal(err)
+	}
+	for i, f := range out.fields {
+		want := 0
+		switch Segment(f.Get("name")) {
+		case "zippy", "config":
+			want = 1
+		case "both":
+			want = 2 // one entry and one section
+		}
+		if got := f.Get("expandable"); !Equal(got, NewInt(int64(want))) {
+			t.Errorf("row %d (%s) says %v children, want %d",
+				i, Segment(f.Get("name")), got, want)
+		}
+	}
+}
