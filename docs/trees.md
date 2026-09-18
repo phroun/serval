@@ -182,6 +182,19 @@ adjacency list, where the hierarchy is edges and nothing has written a path down
 at all — and there the path is only knowable by descending, which is the cost of
 that shape.
 
+**But the third is the one that always works, and that is worth saying the other
+way round: the first two are OPTIMISATIONS.** A tree can always build a path as
+it descends, whatever the data is shaped like. What reading it whole or joining a
+container and a name buys is knowing a node's position WITHOUT having descended
+to it — which is what jumping straight to a node needs and what a deep filter
+needs, and which is the only thing the other two buy. Derived is the mechanism;
+the others are shortcuts past it.
+
+**Which reading applies is the CHILD TYPE's, not the tree's.** A child type
+already names a source, and how a row's position is read is a property of that
+source rather than of the tree holding it. Treating it as one setting for the
+whole tree was an accident of writing the single-source case down first.
+
 **The delimiter is the caller's to choose.** `/` for something filesystem-like,
 `.` for a namespace, `::`, whatever the data uses — and where the tree DERIVES a
 path, choosing a delimiter the segments do not contain is what keeps the path
@@ -266,6 +279,66 @@ of it was secretly about paths:
 address offers a tree, and it buys one real thing — knowing where a row belongs
 without having descended to it — which an adjacency list cannot offer and does
 not need, because it is in hand or it is walked.
+
+## Mixed descent, and what a graft costs
+
+One tree, several shapes: addresses at the top, an adjacency list beneath,
+another source grafted under that. Everything above says how each of them works
+on its own. What is left is what happens where they MEET, and most of it is
+already decided somewhere else — which is the useful finding, because a graft
+turns out to need no mechanism of its own.
+
+**Capability degrades at the boundary, not for the tree.** A reading belongs to
+the child type, so a tree that is addresses at the top and edges beneath can
+still name a node in its upper reaches without walking to it, and cannot beneath.
+The weakest link governs what is possible BELOW it and nothing above. That is the
+right answer rather than the convenient one: the alternative is a tree that drops
+to its worst source's capability everywhere, which would punish exactly the
+mixture this design exists to allow.
+
+**Two things must be qualified by where the graft is, and they are the same
+thing twice.** An identity is unique within a source and not across sources, so
+both the MARK KEY and the REVISIT COUNT have to say which source they mean. That
+is to say they are key-paths — which is why the derived reading is the mechanism
+rather than a fallback for odd data.
+
+**Expandability at a graft is a count, not a read.** Decision 7 puts the field on
+the parent row, and across a graft that asks a row in one source to know
+something about another. Nobody will author that correctly. But the child type
+produces a `Spec`, and `CountOf` answers a Spec without reading a record: `Open`,
+count, `Close`. So three degrees, in the spirit of blank, placed and filled:
+
+| | |
+|---|---|
+| the field | where the row can say, which is free |
+| a count on the child spec | where the source can count — exact over records in hand |
+| unknown | `CountOf` answers `Unknown()` for anything that is not `Counting`, so the twisty is drawn and the answer found on opening |
+
+A count per visible row is a real cost over a source that must be asked, and
+`docs/tally.md` is how a whole page of them becomes one question.
+
+**A child type may change the SORT, and this is free.** It produces a whole
+`Spec`, and a Spec is a source, a filter and a sort. Windows in z-order under
+applications in name order needs nothing added. Worth writing down only because
+a capability nobody notices gets reinvented.
+
+**Decision 8 was written for this case.** A sort naming a field a grafted source
+has not got reads `undefined` rather than being refused — which is what a graft
+does to a sort every time, and the reason that decision is load-bearing rather
+than a nicety.
+
+**A child-type name nothing is registered under reads as a leaf.** Same posture
+as the sort: one bad row must not break a tree, and over-refusing here would let
+a single mistyped field empty a view.
+
+**One data set per open node, per graft.** They are small, and closing a node
+closes its set — so the two mark-wiping rules release resources as well as
+keeping the mark set small, which is the better reason for them.
+
+**What is deliberately NOT per graft:** `Revisits`. The budget says whether the
+data is a graph, a tree that is a graph in one arm and not in another is a
+distinction nothing has yet wanted, and making it per graft means re-running the
+cannot-hang argument per subtree instead of once. One budget, one argument.
 
 ## Filtering, shallow and deep
 
@@ -400,15 +473,20 @@ same eagerness, carrying the same warning, and no new one.
    because `starts location "/usr/local"` would drag in `/usr/locally`.
    **And a path is optional entirely** — an adjacency list of `id` and `parent`
    is a tree with no delimiter, no address field and no string built anywhere.
+   **The reading belongs to the CHILD TYPE**, because a child type names a source
+   and a reading is a property of a source; derived is the mechanism and the
+   other two are shortcuts past it, so capability degrades at a graft and not for
+   the whole tree.
 6. Deep filtering is eager and is for records in hand.
-7. **Expandability is a field.** A source that knows says so, and one that does
-   not leaves it undefined, which reads as a leaf. Over records in hand a tree
-   can work it out from its own buckets and the field is a shortcut; over
-   records that must be asked it is the only way to draw a twisty without
-   opening every visible row. A field that may hold a NUMBER says how many,
-   which also bounds the unknown extent of an `openAll` one level at a time --
-   so `undefined` or `false` is a leaf, `true` is children of unknown number,
-   and a number is that many.
+7. **Expandability is a field, or a count.** A source that knows says so, and one
+   that does not leaves it undefined. A field that may hold a NUMBER says how
+   many, which also bounds the unknown extent of an `openAll` one level at a
+   time -- so `undefined` or `false` is a leaf, `true` is children of unknown
+   number, and a number is that many. Where the row cannot say — which is every
+   graft, a row in one source having no business knowing about another — the
+   child type's `Spec` is counted rather than read, and `CountOf` answering
+   `Unknown()` is the third degree: draw the twisty and find out on opening. A
+   tally turns a page of those counts into one question.
 8. **A sort naming a field a record has not got is not refused.** It reads as
    `undefined`, which is a value with a rank, so those rows gather at the bottom
    of that level and are separated by the levels after it and by the identity
@@ -422,14 +500,17 @@ same eagerness, carrying the same warning, and no new one.
 10. **Cycles are a `Revisits` setting, 0 to 3, defaulting to 0**, counted on the
    record's identity rather than on the path, and clamped rather than refused.
    Nothing hangs, because reading is bounded by the scope and counting is allowed
-   to answer `AtLeast`.
+   to answer `AtLeast`. One budget for the tree, not one per graft.
+11. **A graft needs no mechanism of its own.** The reading is the child type's,
+   the sort is the child type's, the mark key and the revisit count are qualified
+   by which source they mean, an unknown child-type name is a leaf, and
+   expandability is a count. Every one of those is a rule stated for another
+   reason, holding here.
 
 ## Open questions
-- **Whether one tree can take a path one way from some rows and another way from
-  others** — a graft whose second source says where its rows live under a first
-  that only has edges. What the fields are CALLED is settled: the caller names
-  them, and `location` and `name` are this document's example rather than a
-  reserved spelling.
+
+None outstanding on the tree itself. What is still to settle is in
+`docs/tally.md`, which the expandability count leans on.
 
 ## The risk worth naming
 

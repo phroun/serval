@@ -117,6 +117,9 @@ It's a sibling to the rest of the line: **Mew** (text editor), **PurfecTerm**
 - [`docs/trees.md`](docs/trees.md) — a design conversation, nothing built: a
   tree as a source, presenting the rows that are visible flat, so that a
   scrollbar, a thumb drag and a cache work over one without knowing it is one.
+- [`docs/tally.md`](docs/tally.md) — a design conversation, nothing built:
+  `RecordCount` partitioned by a field's value, so that a page of counts is one
+  question rather than a page of questions.
 
 ## Use
 
