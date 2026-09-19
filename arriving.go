@@ -75,3 +75,42 @@ func TellOnArrival(src Source, tell func()) bool {
 	a.WhenArrived(tell)
 	return true
 }
+
+// --- and a wrapper passes it on ------------------------------------------
+
+// A source that wraps another must hand the notice on, or wrapping would COST
+// something.
+//
+// **That is the point, and it was not true before.** A source across a connection
+// wrapped in a cache, a composition, or an amendment stopped being able to say its
+// answer had landed -- so a reader over the wrapper waited forever for a notice
+// the wrapper had swallowed. Wrapping is meant to add a capability, never to take
+// one away, and an application's source is a source like any other: everything
+// that composes with sources composes with it.
+//
+// Each of these forwards to whatever it wraps that can arrive, and says nothing
+// itself. A wrapper over children that all answer at once never fires, which is
+// the right answer rather than a missing one -- there is nothing to tell.
+
+// WhenArrived passes the notice on to whatever this cache wraps.
+//
+// A cache does not fire one of its own: what it holds it holds, and an answer
+// landing at the far end is the CHILD's news. Telling the cache its runs are stale
+// is a different saying with a different name -- see invalidate.go.
+func (c *CachedSource) WhenArrived(tell func()) { TellOnArrival(c.child, tell) }
+
+// WhenArrived passes the notice on to the source this amends. The amendments are
+// here and they do not arrive; the records do.
+func (a *AmendedSource) WhenArrived(tell func()) { TellOnArrival(a.child, tell) }
+
+// WhenArrived passes the notice on to every include that can arrive.
+//
+// **Any one of them is enough**, because a composition's answer is drawn from all
+// of them: a record landing in one changes what the whole says, and a reader that
+// re-reads on it reads the composition rather than the child. So there is no need
+// to know WHICH arrived, and nothing here keeps track.
+func (c *ComposedSource) WhenArrived(tell func()) {
+	for _, inc := range c.includes {
+		TellOnArrival(inc.Source, tell)
+	}
+}

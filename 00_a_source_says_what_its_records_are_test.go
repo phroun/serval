@@ -252,3 +252,69 @@ func TestASourceIsAskedWhatItsRecordsAre(t *testing.T) {
 		t.Error("an empty hint was heard as a hint")
 	}
 }
+
+// --- wrapping must not cost a capability ---------------------------------
+
+// arriving is a source that answers later, which is what a wrapper has to keep
+// working.
+type arriving struct {
+	*ListSource
+	tells []func()
+}
+
+func (a *arriving) WhenArrived(tell func()) { a.tells = append(a.tells, tell) }
+func (a *arriving) landed() {
+	for _, tell := range a.tells {
+		tell()
+	}
+}
+
+// **A wrapper hands the notice on.** A source across a connection wrapped in a
+// cache, a composition or an amendment stopped being able to say its answer had
+// landed -- so a reader over the wrapper waited forever for a notice the wrapper
+// had swallowed. Wrapping adds a capability; it never takes one away.
+func TestAWrapperHandsTheArrivalNoticeOn(t *testing.T) {
+	for _, c := range []struct {
+		what string
+		wrap func(*arriving) Source
+	}{
+		{"a cache", func(a *arriving) Source { return NewCachedSource(a) }},
+		{"an amendment", func(a *arriving) Source { return NewAmendedSource(a) }},
+		{"a composition", func(a *arriving) Source {
+			src, err := NewComposedSource(Include{Name: "rows", Source: a})
+			if err != nil {
+				t.Fatalf("composing: %v", err)
+			}
+			return src
+		}},
+	} {
+		far := &arriving{ListSource: fileList()}
+		wrapped := c.wrap(far)
+
+		told := 0
+		if !TellOnArrival(wrapped, func() { told++ }) {
+			t.Errorf("%s says it cannot tell, and what it wraps can", c.what)
+			continue
+		}
+		far.landed()
+		if told != 1 {
+			t.Errorf("%s passed on %d notices, want the one that landed", c.what, told)
+		}
+	}
+}
+
+// And a wrapper over a source that answers AT ONCE never fires, which is the right
+// answer rather than a missing one: there is nothing to tell.
+func TestAWrapperOverASynchronousSourceNeverFires(t *testing.T) {
+	told := 0
+	wrapped := NewCachedSource(fileList())
+	// It reports that it can tell -- it will, if ever there is anything -- and
+	// then there never is.
+	TellOnArrival(wrapped, func() { told++ })
+	if _, err := wrapped.Open(&Spec{}); err != nil {
+		t.Fatalf("stating a sequence: %v", err)
+	}
+	if told != 0 {
+		t.Errorf("it announced %d arrivals over a source that answers at once", told)
+	}
+}
