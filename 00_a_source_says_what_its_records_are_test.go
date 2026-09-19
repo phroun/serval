@@ -8,6 +8,7 @@ package serval
 // being wrong.
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -453,5 +454,171 @@ func TestATreeFlattensASourceThatAnswersLater(t *testing.T) {
 		t.Error("it said so twice for one flattening: the walk's own answer was " +
 			"taken for news, which is how asking becomes a loop")
 	case <-time.After(150 * time.Millisecond):
+	}
+}
+
+// --- a level is asked a targeted question ---------------------------------
+
+// tally is a source that remembers what it was ASKED for, so a test can say
+// something about the question rather than only about the answer.
+type tally struct {
+	*ListSource
+	mu    sync.Mutex
+	asked []int // the Count of each scope read from it
+}
+
+func (c *tally) Open(spec *Spec) (DataSet, error) {
+	set, err := c.ListSource.Open(spec)
+	if err != nil {
+		return nil, err
+	}
+	return &tallySet{c: c, set: set}, nil
+}
+
+type tallySet struct {
+	c   *tally
+	set DataSet
+}
+
+func (s *tallySet) Read(sc *Scope, out Sink) error {
+	s.c.mu.Lock()
+	s.c.asked = append(s.c.asked, sc.Count)
+	s.c.mu.Unlock()
+	return s.set.Read(sc, out)
+}
+func (s *tallySet) Close() { s.set.Close() }
+
+func (c *tally) biggestAsk() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	most := 0
+	for _, n := range c.asked {
+		if n > most {
+			most = n
+		}
+	}
+	return most
+}
+
+// flatRows is one level of many siblings, which is the shape that makes an
+// unbounded question expensive: a screenful is forty rows and the level is not.
+func flatRows(n int) []Row {
+	rows := make([]Row, 0, n)
+	for i := 0; i < n; i++ {
+		rows = append(rows, NewRow(NewInt(int64(i)), Record{
+			Named("name", fmt.Sprintf("row %d", i)),
+		}))
+	}
+	return rows
+}
+
+// **A reader asking for a window asks the level for a window.** A level's FILTER
+// was always targeted -- the children of one node -- but it used to be read with a
+// count of everything, so a flat level of ten thousand answered ten thousand rows
+// to fill a screen of forty. No level can usefully answer more than the walk still
+// needs.
+func TestAWindowedReadAsksTheLevelForAWindow(t *testing.T) {
+	far := &tally{ListSource: NewListSource(flatRows(10000))}
+	tree, err := NewTreeSource(TreeOptions{
+		Source: far,
+		Types:  NodeTypes{Default: &NodeType{}},
+	})
+	if err != nil {
+		t.Fatalf("stating the tree: %v", err)
+	}
+	set, err := tree.Open(nil)
+	if err != nil {
+		t.Fatalf("stating the sequence: %v", err)
+	}
+	defer set.Close()
+
+	var got sinkRows
+	if err := set.Read(&Scope{Count: 40}, &got); err != nil {
+		t.Fatalf("reading: %v", err)
+	}
+	if len(got.names) != 40 {
+		t.Fatalf("it answered %d rows, want the forty asked for", len(got.names))
+	}
+	// One spare row past the budget, which is what tells "that is all" from "there
+	// is more" -- and nothing like the whole level.
+	if most := far.biggestAsk(); most > 41 {
+		t.Errorf("the level was asked for %d rows to fill a window of 40", most)
+	}
+	// And the count is a FLOOR, because the walk stopped at what it was asked for
+	// rather than at the end of the tree.
+	if n := CountOf(set); n.Exact {
+		t.Errorf("it claims exactly %d rows, and it has not looked at the rest", n.N)
+	} else if n.N < 40 {
+		t.Errorf("it says at least %d rows, and it answered 40", n.N)
+	}
+}
+
+// A reader that wants the WHOLE sequence still gets it, exactly counted -- which is
+// what every reader of a tree did before there was another way to ask.
+func TestAWholeReadStillSeesTheWholeTree(t *testing.T) {
+	far := &tally{ListSource: NewListSource(flatRows(500))}
+	tree, err := NewTreeSource(TreeOptions{
+		Source: far,
+		Types:  NodeTypes{Default: &NodeType{}},
+	})
+	if err != nil {
+		t.Fatalf("stating the tree: %v", err)
+	}
+	set, err := tree.Open(nil)
+	if err != nil {
+		t.Fatalf("stating the sequence: %v", err)
+	}
+	defer set.Close()
+
+	var got sinkRows
+	if err := set.Read(&Scope{Count: 1 << 30}, &got); err != nil {
+		t.Fatalf("reading: %v", err)
+	}
+	if len(got.names) != 500 {
+		t.Fatalf("it answered %d rows, want all five hundred", len(got.names))
+	}
+	if n := CountOf(set); !n.Exact || n.N != 500 {
+		t.Errorf("it counts %v, want exactly five hundred", n)
+	}
+}
+
+// **Reading further flattens further, and the first walk is not thrown away.** A
+// reader stepping through pays for the walk once and then for the difference.
+func TestReadingFurtherFlattensFurther(t *testing.T) {
+	far := &tally{ListSource: NewListSource(flatRows(300))}
+	tree, err := NewTreeSource(TreeOptions{
+		Source: far,
+		Types:  NodeTypes{Default: &NodeType{}},
+	})
+	if err != nil {
+		t.Fatalf("stating the tree: %v", err)
+	}
+	set, err := tree.Open(nil)
+	if err != nil {
+		t.Fatalf("stating the sequence: %v", err)
+	}
+	defer set.Close()
+
+	var first sinkRows
+	if err := set.Read(&Scope{Count: 20}, &first); err != nil {
+		t.Fatalf("reading: %v", err)
+	}
+	if n := CountOf(set); n.N != 20 || n.Exact {
+		t.Fatalf("after twenty it says %v", n)
+	}
+
+	// Further in than it has been, so it flattens further.
+	var second sinkRows
+	if err := set.Read(&Scope{From: 100, Count: 20}, &second); err != nil {
+		t.Fatalf("reading further: %v", err)
+	}
+	if len(second.names) != 20 {
+		t.Fatalf("it answered %d rows from a hundred in", len(second.names))
+	}
+	if second.names[0] != "row 100" {
+		t.Errorf("it started at %q, want row 100", second.names[0])
+	}
+	if n := CountOf(set); n.N < 120 {
+		t.Errorf("it says at least %d rows, and it has flattened a hundred and twenty", n.N)
 	}
 }

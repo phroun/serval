@@ -409,13 +409,15 @@ func (t *TreeSource) Open(spec *Spec) (DataSet, error) {
 				"rather than sorted, and each level carries its own sort",
 			spec.Sort[0].Field)
 	}
-	set := &treeDataSet{tree: t}
+	set := &treeDataSet{tree: t, at: map[string]int{}}
 	if spec != nil {
 		set.shallow = spec.Filter
 	}
-	if err := set.build(); err != nil {
-		return nil, err
-	}
+	// **Stating a sequence does not walk it.** How far to flatten is the SCOPE's
+	// question, and no scope has been asked yet -- so a walk here could only guess,
+	// and the guess it used to make was "all of it". A reader's first Read says what
+	// it wants and the flattening goes that far. See treeDataSet.reach.
+
 	t.mu.Lock()
 	t.live[set] = true
 	t.mu.Unlock()
@@ -444,6 +446,42 @@ type treeDataSet struct {
 	// later. It is what stops a second walk asking every level the same question
 	// again while the first is still being answered.
 	walking bool
+
+	// budget is how many rows the last walk was asked for, and `whole` says it ran
+	// out of TREE before it ran out of budget -- so what is held is the lot.
+	//
+	// **That is the difference between an exact count and a floor.** A flattening
+	// that stopped because it had what it came for knows there may be more; one
+	// that stopped because there was no more knows there is not.
+	budget int
+	whole  bool
+}
+
+// needs is how many flattened rows a scope requires before it can be answered.
+//
+// A scope starting at a position needs everything up to it and then its count; one
+// starting `after` a row it holds needs that row's place and then the count. A
+// scope that names neither starts at the beginning.
+//
+// **Asking for an enormous count is a reader saying it wants the whole thing**,
+// which is what every reader of a tree did before there was any other way to ask.
+func (v *treeDataSet) needs(s *Scope) int {
+	if s == nil || s.Count <= 0 {
+		return 0
+	}
+	from := 0
+	switch {
+	case s.From > 0:
+		from = s.From
+	case s.After != nil:
+		if at, ok := v.at[Key(s.After)]; ok {
+			from = at + 1
+		}
+	}
+	if s.Count >= everyRow-from {
+		return everyRow
+	}
+	return from + s.Count
 }
 
 func (v *treeDataSet) Close() {
@@ -456,16 +494,54 @@ func (v *treeDataSet) Close() {
 	v.mu.Unlock()
 }
 
-// RecordCount is how many rows are visible, and it is EXACT: the flattening
-// walked them all, so the figure is a slice's length. That is a scrollbar's
-// scale over a tree nobody has scrolled.
+// RecordCount is how many rows are visible.
+//
+// **Exact where the flattening saw the whole tree, and a FLOOR where it stopped
+// at what it was asked for.** Those are two different facts and RecordCount is
+// built to say either: a reader that wanted forty rows out of a hundred thousand
+// is told at least forty, and draws a thumb that shrinks as it learns more rather
+// than a true one it has not earned.
+//
+// A reader that asked for the whole sequence gets the exact figure, which is what
+// every reader of a tree did before there was another way to ask.
 func (v *treeDataSet) RecordCount() RecordCount {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.at == nil {
 		return Unknown() // closed
 	}
-	return Exactly(len(v.rows))
+	if v.whole {
+		return Exactly(len(v.rows))
+	}
+	return AtLeast(len(v.rows))
+}
+
+// reach flattens far enough to answer this scope, where it is not far enough
+// already.
+//
+// It does nothing in the two ordinary cases: the walk already saw the whole tree,
+// or it already holds more rows than the scope needs. So a reader stepping through
+// a sequence pays for the walk once and then for nothing, and one that jumps
+// further than it has been pays for the difference.
+func (v *treeDataSet) reach(s *Scope) error {
+	v.mu.Lock()
+	if v.at == nil || v.whole {
+		v.mu.Unlock()
+		return nil
+	}
+	need := v.needs(s)
+	if need <= len(v.rows) || need <= v.budget {
+		v.mu.Unlock()
+		return nil
+	}
+	v.budget = need
+	walking := v.walking
+	v.mu.Unlock()
+	if walking {
+		// One in flight already, and it will tell when it lands.
+		return nil
+	}
+	return v.build()
 }
 
 // rebuild is what a mark change costs. It is told rather than noticed.
@@ -536,7 +612,11 @@ func (v *treeDataSet) build() error {
 
 // walk is the flattening itself, wherever it is being done.
 func (v *treeDataSet) walk() error {
-	d := &descent{set: v, tree: v.tree}
+	v.mu.Lock()
+	budget := v.budget
+	v.mu.Unlock()
+
+	d := &descent{set: v, tree: v.tree, want: budget, left: budget}
 	// The top level's rows are of the default kind, read out of the tree's own
 	// source by the tree's own spec.
 	top := v.tree.opt.Types.Default
@@ -548,8 +628,12 @@ func (v *treeDataSet) walk() error {
 	v.err = err
 	if err != nil {
 		v.rows, v.at = nil, map[string]int{}
+		v.whole = false
 		return err
 	}
+	// It ran out of TREE before it ran out of budget, so this is the lot -- which
+	// is what makes the count exact rather than a floor.
+	v.whole = !d.enough()
 	v.rows = d.rows
 	v.at = make(map[string]int, len(d.rows))
 	for i, r := range d.rows {
@@ -564,6 +648,16 @@ func (v *treeDataSet) walk() error {
 // this is: the rows are in a slice, in order, so `after` is a map lookup, `from`
 // is honoured exactly, and the count and the first position are both facts.
 func (v *treeDataSet) Read(s *Scope, out Sink) error {
+	// **The scope is what says how far to flatten.** A reader asking for a window
+	// needs the pre-order up to the end of it and no further, so that is what the
+	// walk is asked for -- and every level inside it is asked for no more than
+	// that. A reader asking for the whole sequence gets the whole walk, which is
+	// what one over records in hand has always had.
+	if err := v.reach(s); err != nil {
+		out.Done(Complete{Error: err.Error()})
+		return nil
+	}
+
 	v.mu.Lock()
 	rows, at, buildErr := v.rows, v.at, v.err
 	v.mu.Unlock()
@@ -653,6 +747,20 @@ type descent struct {
 	tree *TreeSource
 	rows []treeRow
 
+	// want is how many rows this walk was asked for, and `left` how many of them
+	// it still needs.
+	//
+	// **It is what makes a level's question targeted.** A level is asked for the
+	// children of one node -- that part was always exact -- but it used to be asked
+	// for all of them, however many that is. A flat level of a hundred thousand
+	// siblings then answered a hundred thousand rows to fill a screen of forty.
+	//
+	// No level can usefully answer more than the walk still needs: every row it
+	// sends past that is a row nobody will look at. So `left` is the count each
+	// level is read with, and a walk that has what it came for stops asking.
+	want int
+	left int
+
 	// counts is one census per node type, taken when a twisty first needs one
 	// and kept for the rest of this build. A nil value means it was tried and
 	// could not be had.
@@ -713,7 +821,7 @@ func (d *descent) level(kind string, src Source, spec *Spec, st Standing,
 	// only sent a question -- and closing before the answer came hung up on it,
 	// which is a question asked and deliberately not listened for.
 	got := newLevelRows()
-	err = set.Read(&Scope{Count: everyRow}, got)
+	err = set.Read(&Scope{Count: d.ask()}, got)
 	if err == nil {
 		got.wait()
 	}
@@ -727,6 +835,12 @@ func (d *descent) level(kind string, src Source, spec *Spec, st Standing,
 	}
 
 	for i := range ids {
+		// **The budget is spent, so the walk stops.** Every row past what was asked
+		// for is a row nobody is going to look at, and a deeper level opened to
+		// find it is a question asked for nothing.
+		if d.enough() {
+			return nil
+		}
 		id, fields := ids[i], fields1[i]
 		path := st.PathOf(above.Path, id, fields)
 		node := Node{Key: id, Fields: fields, Path: path}
@@ -769,6 +883,9 @@ func (d *descent) level(kind string, src Source, spec *Spec, st Standing,
 		// then every volume: predictable, and asking nothing of two sources that
 		// they cannot answer.
 		for _, name := range next {
+			if d.enough() {
+				return nil
+			}
 			below := d.tree.opt.Types.Get(name)
 			if below == nil || below.Children.Of == nil {
 				continue
@@ -782,7 +899,30 @@ func (d *descent) level(kind string, src Source, spec *Spec, st Standing,
 	return nil
 }
 
-// everyRow is the count a level is read with. The flattening is eager, so a
+// ask is how many rows to read a level with: what this walk still needs.
+//
+// **One more than it needs, deliberately.** A level that answers exactly the
+// budget leaves the walk unable to tell "that is all there is" from "there is more
+// and you stopped" -- and the difference between an exact count and a floor is
+// exactly that. One spare row settles it without fetching a page to find out.
+//
+// A walk with no budget asks for everything, which is what a reader wanting the
+// whole sequence gets: `Read` with an enormous count is a reader saying so.
+func (d *descent) ask() int {
+	if d.want <= 0 || d.left <= 0 {
+		return everyRow
+	}
+	if d.left >= everyRow-1 {
+		return everyRow
+	}
+	return d.left + 1
+}
+
+// enough reports whether this walk has what it was asked for, so the descent can
+// stop rather than walk a tree nobody is reading the rest of.
+func (d *descent) enough() bool { return d.want > 0 && d.left <= 0 }
+
+// everyRow is the count a level is read with where nobody set a budget. The
 // level is read entire; the number is a ceiling against a source that would
 // otherwise answer forever, not a window.
 const everyRow = 1 << 30
@@ -939,6 +1079,9 @@ func (d *descent) emit(of Node, kind string, depth int, state Mark, children Rec
 		id = NewText(of.Path)
 	}
 	d.rows = append(d.rows, treeRow{id: id, fields: out})
+	if d.want > 0 {
+		d.left--
+	}
 }
 
 // levelRows takes one level entire.
