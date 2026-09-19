@@ -76,6 +76,44 @@ func TellOnArrival(src Source, tell func()) bool {
 	return true
 }
 
+// Arrives reports whether a source may answer AFTER its read returns -- itself, or
+// anything it wraps.
+//
+// **It is not the same question as "does it implement Arriving", and that is the
+// whole reason it exists.** A wrapper hands the notice on, so it implements the
+// interface whatever its child does: a cache over a list of records in hand is
+// `Arriving` and will never fire, because there is nothing under it to fire.
+//
+// Asserting the interface to decide whether to WAIT is therefore wrong, and wrong in
+// the expensive direction. A tree that concluded its levels might answer late walked
+// on a goroutine of its own and returned no rows, expecting a notice to bring the
+// reader back -- and no notice ever came, the records having been there all along.
+// The tree read empty forever. That is what this is for; see `answersLater`.
+//
+// A wrapper is asked about its child. Anything else is asked whether it can arrive
+// at all, which for a source that is not one of these wrappers is the same question.
+func Arrives(src Source) bool {
+	switch s := src.(type) {
+	case *CachedSource:
+		return Arrives(s.child)
+	case *AmendedSource:
+		return Arrives(s.child)
+	case *ComposedSource:
+		for _, in := range s.includes {
+			if Arrives(in.Source) {
+				return true
+			}
+		}
+		return false
+	case *TreeSource:
+		// A tree's own answer waits exactly when one of its levels does, which it
+		// settled when it was stated.
+		return s.later
+	}
+	_, ok := src.(Arriving)
+	return ok
+}
+
 // --- and a wrapper passes it on ------------------------------------------
 
 // A source that wraps another must hand the notice on, or wrapping would COST

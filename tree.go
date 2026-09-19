@@ -229,14 +229,19 @@ func NewTreeSource(o TreeOptions) (*TreeSource, error) {
 // type's -- because one of them being across a connection is enough to make the
 // whole flattening wait somewhere.
 func answersLater(o TreeOptions) bool {
-	if _, ok := o.Source.(Arriving); ok {
+	// **Asked with `Arrives` and not with a type assertion**, because a wrapper
+	// implements `Arriving` whether or not anything under it does -- it hands the
+	// notice on, which is its job. A tree that took the assertion for an answer
+	// concluded that a cache over records in hand might answer late, walked on a
+	// goroutine, returned no rows, and waited for a notice that could never come.
+	if Arrives(o.Source) {
 		return true
 	}
 	for _, nt := range o.Types.all() {
 		if nt == nil || nt.Source == nil {
 			continue
 		}
-		if _, ok := nt.Source.(Arriving); ok {
+		if Arrives(nt.Source) {
 			return true
 		}
 	}

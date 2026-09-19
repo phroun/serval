@@ -296,3 +296,113 @@ func TestOneIncludeThatCannotCensusRefusesTheComposition(t *testing.T) {
 		t.Error("the composition answered although one include could not")
 	}
 }
+
+// --- and whether anything under it actually arrives -----------------------
+
+// **Implementing `Arriving` is not the same as answering late**, and the difference
+// is what `Arrives` is for.
+//
+// A wrapper hands the notice on, so it satisfies the interface whatever its child
+// does: a cache over records in hand can be asked to tell, and will never tell,
+// because there is nothing under it to tell about. Asserting the interface to decide
+// whether to WAIT is therefore wrong -- and wrong expensively. A tree that concluded
+// its levels might answer late walked on a goroutine and returned no rows at all,
+// waiting for a notice that could not come.
+func TestAWrapperOverRecordsInHandDoesNotArrive(t *testing.T) {
+	held := countable()
+	for _, over := range []struct {
+		what string
+		src  Source
+	}{
+		{"a bare list", held},
+		{"a cache", NewCachedSource(held)},
+		{"an amendment", NewAmendedSource(held)},
+	} {
+		if Arrives(over.src) {
+			t.Errorf("%s says it may answer late, over records in hand", over.what)
+		}
+	}
+
+	// A composition arrives when any include does, and not otherwise.
+	quiet, err := NewComposedSource(
+		Include{Name: "a", Source: held}, Include{Name: "b", Source: held})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if Arrives(quiet) {
+		t.Error("a composition of records in hand says it may answer late")
+	}
+}
+
+// arriver answers after its read returns, which is what a source across a
+// connection does.
+type arriver struct{ tells []func() }
+
+func (a *arriver) Open(*Spec) (DataSet, error) { return &arriverSet{}, nil }
+func (a *arriver) WhenArrived(tell func())     { a.tells = append(a.tells, tell) }
+
+type arriverSet struct{}
+
+func (s *arriverSet) Read(sc *Scope, out Sink) error { return nil } // later
+func (s *arriverSet) Close()                         {}
+
+// And a wrapper over one that DOES arrive says so, however deep it is -- which is
+// the half that was already true and must stay true.
+func TestAWrapperOverSomethingThatArrivesSaysSo(t *testing.T) {
+	late := &arriver{}
+	if !Arrives(late) {
+		t.Fatal("the source that arrives says it does not")
+	}
+	for _, over := range []struct {
+		what string
+		src  Source
+	}{
+		{"a cache", NewCachedSource(late)},
+		{"an amendment", NewAmendedSource(late)},
+		{"an amendment over a cache", NewAmendedSource(NewCachedSource(late))},
+	} {
+		if !Arrives(over.src) {
+			t.Errorf("%s says it answers at once, over something that does not", over.what)
+		}
+	}
+
+	mixed, err := NewComposedSource(
+		Include{Name: "here", Source: countable()}, Include{Name: "late", Source: late})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !Arrives(mixed) {
+		t.Error("a composition with one late include says it answers at once")
+	}
+}
+
+// **A tree over a WRAPPER of records in hand flattens on the thread that asked**, so
+// its rows are there when the read returns. This is the case that failed: the tree
+// went asynchronous because its source implemented an interface, and a reader saw an
+// empty tree with no way to learn otherwise.
+func TestATreeOverAWrappedListFlattensAtOnce(t *testing.T) {
+	over := NewAmendedSource(NewListSource([]Row{
+		NewRow(NewInt(1), Record{Named("name", "alpha")}),
+		NewRow(NewInt(2), Record{Named("name", "beta")}),
+	}))
+	tree, err := NewTreeSource(TreeOptions{
+		Source: over,
+		Types:  NodeTypes{Default: &NodeType{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err := tree.Open(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer set.Close()
+
+	var got collector
+	if err := set.Read(&Scope{Count: 10}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.joined() != "1,2" {
+		t.Errorf("the tree reads %q, want both rows on the thread that asked", got.joined())
+	}
+}
