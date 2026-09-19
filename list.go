@@ -56,6 +56,10 @@ func (r plainRow) Field(name string) *Value { return r.fields.Get(name) }
 
 // ListSource is a body of records held here, presented as a source.
 type ListSource struct {
+	// What it says its records ARE, where somebody has said. Embedded rather than
+	// wrapped so that nothing about how the list answers changes; see treehint.go.
+	HintSaid
+
 	rows []Row
 
 	mu     sync.Mutex

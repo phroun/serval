@@ -51,6 +51,9 @@ const rounds = 4
 
 // An AmendedSource holds replacements and deletions against a child's records.
 type AmendedSource struct {
+	// What it says its records ARE, where somebody has said; see treehint.go.
+	HintSaid
+
 	child  Source
 	notes  *placebook
 	orders *orders

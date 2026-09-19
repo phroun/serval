@@ -219,6 +219,26 @@ type Hinting interface {
 	TreeHint() TreeHint
 }
 
+// A HintSaid is what a source embeds to be able to say what its records are.
+//
+// It is embedded rather than wrapped, and that is the point. A wrapper forwarding
+// `Open` would have to forward every OPTIONAL interface too -- Counting,
+// Censusing, TreeFielded, and whichever is added next -- and the one it forgot
+// would silently degrade the source it wrapped. Embedding adds a method and
+// changes nothing else.
+//
+// **The hint is said when the source is assembled, before anybody reads it.** So
+// there is no lock: whoever built the source is the only one holding it at that
+// moment. A source whose shape changes after it has been handed out is not a thing
+// this describes.
+type HintSaid struct{ hint TreeHint }
+
+// SetTreeHint says what this source's records are.
+func (h *HintSaid) SetTreeHint(hint TreeHint) { h.hint = hint }
+
+// TreeHint is what it was told, and the zero hint where nobody said.
+func (h *HintSaid) TreeHint() TreeHint { return h.hint }
+
 // TreeHintOf is what a source says about the shape of its records, and false for
 // one that says nothing.
 //
