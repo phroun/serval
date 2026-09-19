@@ -153,6 +153,12 @@ type TreeSource struct {
 	mu   sync.Mutex
 	mark Marks
 	live map[*treeDataSet]bool
+
+	// order is how each KIND of row is ordered among its siblings, where
+	// somebody has said something other than what the configuration says. Keyed
+	// by kind name, the empty name being the default kind, which is the top
+	// level's. See SortBy.
+	order map[string][]SortLevel
 }
 
 // NewTreeSource makes one, and refuses what cannot be used.
@@ -197,6 +203,49 @@ func (t *TreeSource) Expand(chain ...string)    { t.moved(func() { t.mark.Open(c
 func (t *TreeSource) ExpandAll(chain ...string) { t.moved(func() { t.mark.OpenAll(chain...) }) }
 func (t *TreeSource) Collapse(chain ...string)  { t.moved(func() { t.mark.Close(chain...) }) }
 func (t *TreeSource) CollapseAll()              { t.moved(t.mark.Clear) }
+
+// SortBy restates how each KIND of row is ordered among its siblings, and tells
+// every sequence stated over this tree.
+//
+// **A tree sorts LEVEL by level, which is why this is per kind and not one
+// order.** The pre-order is built rather than sorted -- `Open` refuses a sort for
+// that reason -- so "sort by size" over a tree is a sort of each level's own
+// sequence, laid out in the order the walk visits them. A kind spelling its size
+// `bytes` where another spells it `size` is exactly the case, and the caller who
+// knows both is the one holding the columns.
+//
+// A kind not named here is ordered as its configuration says. A kind named with
+// no levels is ordered the way its source answers, which is how a sort is turned
+// OFF -- so the map's keys are the question and an empty slice is an answer.
+//
+// The empty name is the default kind, which is the top level's.
+func (t *TreeSource) SortBy(byKind map[string][]SortLevel) {
+	t.mu.Lock()
+	t.order = byKind
+	t.mu.Unlock()
+	t.tell()
+}
+
+// sortFor is the spec a level is read by, with whatever was said about this
+// kind's order in place of what the configuration says.
+//
+// The spec is COPIED where there is something to say, because it is the caller's
+// -- a node type's `Of` may hand back the same one every time, and writing a sort
+// into it would be rewriting the configuration.
+func (t *TreeSource) sortFor(kind string, spec *Spec) *Spec {
+	t.mu.Lock()
+	levels, said := t.order[kind]
+	t.mu.Unlock()
+	if !said {
+		return spec
+	}
+	out := Spec{}
+	if spec != nil {
+		out = *spec
+	}
+	out.Sort = levels
+	return &out
+}
 
 // Stale says that what this tree flattens has changed: a level's source was
 // restated, a record was altered, one arrived or one went.
@@ -484,7 +533,7 @@ func (d *descent) level(kind string, src Source, spec *Spec, st Standing,
 
 	nt := d.tree.opt.Types.Get(kind)
 
-	spec = d.withShallow(spec)
+	spec = d.tree.sortFor(kind, d.withShallow(spec))
 	set, err := src.Open(spec)
 	if err != nil {
 		return err

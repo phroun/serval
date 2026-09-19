@@ -161,3 +161,167 @@ func TestATreeToldItIsStaleFlattensAgain(t *testing.T) {
 		t.Errorf("it reads %v, want the new rows in their own order", got)
 	}
 }
+
+// --- and a tree's levels can be ordered otherwise ------------------------
+
+// twoLevels is hosts and the applications on them, each level with an order its
+// configuration chose.
+func twoLevels(t *testing.T) (*TreeSource, *ListSource) {
+	t.Helper()
+	hosts := NewListSource([]Row{
+		NewRow(NewInt(1), Record{Named("name", "kestrel"), Named("size", 2)}),
+		NewRow(NewInt(2), Record{Named("name", "merlin"), Named("size", 1)}),
+	})
+	apps := NewListSource([]Row{
+		NewRow(NewInt(10), Record{
+			Named("name", "browser"), Named("host", 1), Named("size", 9),
+		}),
+		NewRow(NewInt(11), Record{
+			Named("name", "editor"), Named("host", 1), Named("size", 3),
+		}),
+	})
+	tree, err := NewTreeSource(TreeOptions{
+		Source: hosts,
+		Spec:   &Spec{Sort: []SortLevel{{Field: "name"}}},
+		Types: NodeTypes{
+			Default: &NodeType{Then: Always("apps")},
+			Named: map[string]*NodeType{
+				"apps": {
+					Source:   apps,
+					Children: Sorted(ChildrenByKey("host"), SortLevel{Field: "name"}),
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("stating the tree: %v", err)
+	}
+	return tree, apps
+}
+
+func flat(t *testing.T, tree *TreeSource) []string {
+	t.Helper()
+	tree.ExpandAll()
+	set, err := tree.Open(nil)
+	if err != nil {
+		t.Fatalf("stating the sequence: %v", err)
+	}
+	defer set.Close()
+	return captionsOf(t, set)
+}
+
+// **A tree sorts LEVEL by level, which is why an order is said per kind.** The
+// pre-order is built rather than sorted, so "by size, descending" over a tree is
+// each level's own sequence put in that order and the walk laid over it.
+func TestATreesLevelsCanBeOrderedOtherwise(t *testing.T) {
+	tree, _ := twoLevels(t)
+	if got := flat(t, tree); got[0] != "kestrel" || got[1] != "browser" {
+		t.Fatalf("as configured the tree reads %v", got)
+	}
+
+	by := []SortLevel{{Field: "size", Level: Level{Descending: true}}}
+	tree.SortBy(map[string][]SortLevel{"": by, "apps": by})
+
+	got := flat(t, tree)
+	want := []string{"kestrel", "browser", "editor", "merlin"}
+	for i := range want {
+		if i >= len(got) || got[i] != want[i] {
+			t.Fatalf("ordered by size the tree reads\n  %v\nwant\n  %v", got, want)
+		}
+	}
+}
+
+// A kind nobody named keeps the order its configuration chose, so one level can
+// be reordered without the rest being restated.
+func TestAKindNobodyNamedKeepsItsOwnOrder(t *testing.T) {
+	tree, _ := twoLevels(t)
+	tree.SortBy(map[string][]SortLevel{
+		"apps": {{Field: "size", Level: Level{Descending: true}}},
+	})
+	got := flat(t, tree)
+	want := []string{"kestrel", "browser", "editor", "merlin"}
+	for i := range want {
+		if i >= len(got) || got[i] != want[i] {
+			t.Fatalf("the tree reads\n  %v\nwant\n  %v -- only the apps were named", got, want)
+		}
+	}
+}
+
+// **A kind named with NO levels is ordered the way its source answers**, which is
+// how a sort is turned off. The map's keys are the question; an empty slice is an
+// answer and not a silence.
+func TestAKindNamedWithNoLevelsTakesTheSourcesOwnOrder(t *testing.T) {
+	tree, _ := twoLevels(t)
+	tree.SortBy(map[string][]SortLevel{"": {}})
+	got := flat(t, tree)
+	// The hosts source holds kestrel then merlin, which is also what `name`
+	// gives -- so the assertion that means anything is about the SIZE order the
+	// configuration did not ask for either way. Reordering the list is what
+	// shows it.
+	if len(got) == 0 || got[0] != "kestrel" {
+		t.Fatalf("unsorted the tree reads %v", got)
+	}
+	tree.SortBy(map[string][]SortLevel{"": {{Field: "size"}}})
+	if got := flat(t, tree); got[0] != "merlin" {
+		t.Errorf("by size the tree reads %v, want the smaller host first", got)
+	}
+	tree.SortBy(map[string][]SortLevel{"": {}})
+	if got := flat(t, tree); got[0] != "kestrel" {
+		t.Errorf("with the sort turned off the tree reads %v, want the source's "+
+			"own order back", got)
+	}
+}
+
+// Restating a level's rows and reordering it are two different sayings, and both
+// reach a sequence somebody is holding.
+func TestAnOrderSaidIsToldToEverySequence(t *testing.T) {
+	tree, apps := twoLevels(t)
+	tree.ExpandAll()
+	set, err := tree.Open(nil)
+	if err != nil {
+		t.Fatalf("stating the sequence: %v", err)
+	}
+	defer set.Close()
+
+	if got := len(captionsOf(t, set)); got != 4 {
+		t.Fatalf("to begin with the tree holds %d rows", got)
+	}
+	apps.Restate([]Row{
+		NewRow(NewInt(12), Record{Named("name", "shell"), Named("host", 2)}),
+	})
+	tree.Stale()
+	got := captionsOf(t, set)
+	want := []string{"kestrel", "merlin", "shell"}
+	for i := range want {
+		if i >= len(got) || got[i] != want[i] {
+			t.Fatalf("told, the tree reads\n  %v\nwant\n  %v", got, want)
+		}
+	}
+	tree.SortBy(map[string][]SortLevel{"": {{Field: "name", Level: Level{Descending: true}}}})
+	if got := captionsOf(t, set); got[0] != "merlin" {
+		t.Errorf("reordered, the sequence somebody holds reads %v", got)
+	}
+}
+
+// **The configuration is not the tree's to rewrite.** An order said for a kind is
+// laid over a COPY of that level's spec, so saying nothing afterwards gives the
+// order the configuration chose rather than the last thing anybody asked for.
+//
+// The top level is where it shows: a node type's `Of` builds a fresh spec every
+// time, but `TreeOptions.Spec` is one pointer read on every build.
+func TestAnOrderSaidAndThenUnsaidGivesTheConfigurationBack(t *testing.T) {
+	tree, _ := twoLevels(t)
+	if got := flat(t, tree); got[0] != "kestrel" {
+		t.Fatalf("as configured the tree reads %v", got)
+	}
+	tree.SortBy(map[string][]SortLevel{"": {{Field: "size"}}})
+	if got := flat(t, tree); got[0] != "merlin" {
+		t.Fatalf("by size the tree reads %v", got)
+	}
+
+	tree.SortBy(nil)
+	if got := flat(t, tree); got[0] != "kestrel" {
+		t.Errorf("with nothing said the tree reads %v, want the order its "+
+			"configuration chose -- which was written over", got)
+	}
+}
