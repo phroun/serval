@@ -10,13 +10,14 @@ the other its whole set, so each orders and filters its own records and the
 results are folded together.
 
 That only works if both compute **the same order** and **the same membership**
-from the same spec, without conferring. So the rules have to be exact, small
+from the same descriptor, without conferring. So the rules have to be exact,
+small
 enough to implement twice, and free of anything whose answer depends on the
 machine, the locale or the library version.
 
-Nothing here says how any of it is written down. A spec arrives as a `Spec`; how
-one gets spelled on a wire or in a file is the business of whatever brought it
-in.
+Nothing here says how any of it is written down. A descriptor arrives as a
+`DataSetDescriptor`; how one gets spelled on a wire or in a file is the business
+of whatever brought it in.
 
 ## The comparison core
 

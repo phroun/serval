@@ -12,7 +12,7 @@ func names(ss []string) string { return strings.Join(ss, ",") }
 
 // The three groups, and what falls in each.
 func TestFieldsAreGroupedByThePartTheyPlay(t *testing.T) {
-	spec := &Spec{
+	descriptor := &DataSetDescriptor{
 		Sort: []SortLevel{{Field: ".name"}, {Field: ".size"}},
 		Filter: &Filter{Op: OpAnd, Children: []*Filter{
 			{Op: OpEq, Field: ".kind"},
@@ -25,7 +25,7 @@ func TestFieldsAreGroupedByThePartTheyPlay(t *testing.T) {
 			{Name: ".modified"}, {Name: ".thumbnail"}, // shown, and nothing more
 		},
 	}
-	r := spec.Roles()
+	r := descriptor.Roles()
 
 	if got := names(r.Sort); got != ".name,.size" {
 		t.Errorf("the sort levels are %s", got)
@@ -48,7 +48,7 @@ func TestFieldsAreGroupedByThePartTheyPlay(t *testing.T) {
 // stated over and over as a sequence is read and a list that reshuffles itself
 // makes every statement look like a change.
 func TestAFieldIsNamedOncePerGroup(t *testing.T) {
-	spec := &Spec{
+	descriptor := &DataSetDescriptor{
 		Sort: []SortLevel{{Field: ".name"}, {Field: ".name"}},
 		Filter: &Filter{Op: OpAnd, Children: []*Filter{
 			{Op: OpEq, Field: ".kind"},
@@ -56,7 +56,7 @@ func TestAFieldIsNamedOncePerGroup(t *testing.T) {
 			{Op: OpOr, Children: []*Filter{{Op: OpGt, Field: ".kind"}}},
 		}},
 	}
-	r := spec.Roles()
+	r := descriptor.Roles()
 	if got := names(r.Sort); got != ".name" {
 		t.Errorf("one level named twice came out as %s", got)
 	}
@@ -68,7 +68,7 @@ func TestAFieldIsNamedOncePerGroup(t *testing.T) {
 // A query that named no fields asked for whole records, so what it shows cannot
 // be listed -- only what it asked to be left out.
 func TestAQueryForWholeRecordsShowsWhatItDidNotExclude(t *testing.T) {
-	r := (&Spec{
+	r := (&DataSetDescriptor{
 		Sort:    []SortLevel{{Field: ".name"}},
 		Exclude: Record{{Name: ".blob"}},
 	}).Roles()
@@ -97,7 +97,7 @@ func TestAQueryForWholeRecordsShowsWhatItDidNotExclude(t *testing.T) {
 // Decides is the skeleton question: could a change to this field move a record,
 // or take it out of the sequence?
 func TestDecidesIsTheSkeletonQuestion(t *testing.T) {
-	r := (&Spec{
+	r := (&DataSetDescriptor{
 		Sort:   []SortLevel{{Field: ".name"}},
 		Filter: &Filter{Op: OpAnd, Children: []*Filter{{Op: OpGe, Field: ".size"}}},
 		Fields: Record{{Name: ".name"}, {Name: ".size"}, {Name: ".modified"}},
@@ -127,7 +127,7 @@ func TestDecidesIsTheSkeletonQuestion(t *testing.T) {
 // never changes what it is called -- and a record that happens to carry a field
 // called `key` is answering an ordinary question about an ordinary field.
 func TestAnIdentityTestNamesNoField(t *testing.T) {
-	r := (&Spec{Filter: &Filter{Op: OpAnd, Children: []*Filter{
+	r := (&DataSetDescriptor{Filter: &Filter{Op: OpAnd, Children: []*Filter{
 		{Op: OpID, Field: "key", Values: []*Value{NewSymbol("left/1")}},
 		{Op: OpEq, Field: ".kind"},
 	}}}).Roles()
@@ -143,7 +143,7 @@ func TestAnIdentityTestNamesNoField(t *testing.T) {
 // A field both asked for and asked against is not shown: an exclusion takes it
 // out of what crosses, so nothing depends on it.
 func TestAFieldAskedForAndAgainstIsNotShown(t *testing.T) {
-	r := (&Spec{
+	r := (&DataSetDescriptor{
 		Sort:    []SortLevel{{Field: ".name"}},
 		Fields:  Record{{Name: ".name"}, {Name: ".size"}, {Name: ".blob"}},
 		Exclude: Record{{Name: ".blob"}},
@@ -157,12 +157,12 @@ func TestAFieldAskedForAndAgainstIsNotShown(t *testing.T) {
 	}
 }
 
-// A spec that is not there depends on nothing.
-func TestNoSpecDependsOnNothing(t *testing.T) {
-	var s *Spec
+// A descriptor that is not there depends on nothing.
+func TestNoDataSetDescriptorDependsOnNothing(t *testing.T) {
+	var s *DataSetDescriptor
 	r := s.Roles()
 	if len(r.Sort) != 0 || len(r.Filter) != 0 || len(r.Detail) != 0 || r.Whole {
-		t.Errorf("a spec that is not there came out as %+v", r)
+		t.Errorf("a descriptor that is not there came out as %+v", r)
 	}
 }
 
@@ -170,10 +170,10 @@ func TestNoSpecDependsOnNothing(t *testing.T) {
 
 // covered is the extents of one sequence, as text, so a case reads as what it
 // is about.
-func covered(t *testing.T, src *CachedSource, spec *Spec) string {
+func covered(t *testing.T, src *CachedSource, descriptor *DataSetDescriptor) string {
 	t.Helper()
 	parts := []string{}
-	for _, e := range src.Covers(spec) {
+	for _, e := range src.Covers(descriptor) {
 		parts = append(parts, valueText(e.First)+".."+valueText(e.Last))
 	}
 	return strings.Join(parts, " ")

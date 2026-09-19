@@ -88,9 +88,11 @@ It's a sibling to the rest of the line: **Mew** (text editor), **PurfecTerm**
   Composing adds the includes' figures; amending asks one question twice —
   does the filter admit the child's version, and does it admit ours — which is
   exact wherever the child's has been seen, and a floor where it has not.
-- **What is depended on can be stated.** `Covers(spec)` is the stretches of one
+- **What is depended on can be stated.** `Covers(descriptor)` is the stretches
+  of one
   sequence actually held, read off the runs rather than tracked beside them, and
-  `Spec.Roles()` groups a sequence's fields by the part each plays — so a change
+  `DataSetDescriptor.Roles()` groups a sequence's fields by the part each
+  plays — so a change
   is classified by looking a name up, rather than by evaluating a filter or
   comparing two boundaries.
 - **A record says how many members it has.** Every subset carries two counts —
@@ -128,7 +130,7 @@ import "github.com/phroun/serval"
 
 src := serval.NewCachedSource(serval.NewPSLSource(node, serval.Whole))
 
-set, err := src.Open(&serval.Spec{
+set, err := src.Open(&serval.DataSetDescriptor{
     Sort: []serval.SortLevel{{Field: "name"}},
 })
 if err != nil {

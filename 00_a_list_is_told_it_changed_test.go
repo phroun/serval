@@ -19,9 +19,9 @@ func namedList(names ...string) []Row {
 }
 
 // captions is a sequence read out in order, by one field.
-func captions(t *testing.T, src Source, spec *Spec) []string {
+func captions(t *testing.T, src Source, descriptor *DataSetDescriptor) []string {
 	t.Helper()
-	set, err := src.Open(spec)
+	set, err := src.Open(descriptor)
 	if err != nil {
 		t.Fatalf("stating the sequence: %v", err)
 	}
@@ -51,16 +51,16 @@ func (s *sinkRows) Done(Complete)                              {}
 // A list restated answers the new rows to anyone who asks after.
 func TestARestatedListAnswersTheNewRows(t *testing.T) {
 	src := NewListSource(namedList("alpha", "beta"))
-	spec := &Spec{Sort: []SortLevel{{Field: "name"}}}
+	descriptor := &DataSetDescriptor{Sort: []SortLevel{{Field: "name"}}}
 
-	if got := captions(t, src, spec); len(got) != 2 || got[0] != "alpha" {
+	if got := captions(t, src, descriptor); len(got) != 2 || got[0] != "alpha" {
 		t.Fatalf("to begin with it reads %v", got)
 	}
 	src.Restate(namedList("delta", "gamma", "epsilon"))
-	if got, want := len(captions(t, src, spec)), 3; got != want {
+	if got, want := len(captions(t, src, descriptor)), 3; got != want {
 		t.Errorf("restated it holds %d records, want %d", got, want)
 	}
-	if got := captions(t, src, spec); got[0] != "delta" {
+	if got := captions(t, src, descriptor); got[0] != "delta" {
 		t.Errorf("restated it reads %v, want the new rows sorted", got)
 	}
 	if got, want := src.Len(), 3; got != want {
@@ -69,12 +69,12 @@ func TestARestatedListAnswersTheNewRows(t *testing.T) {
 }
 
 // **The ordering is forgotten, and that is what the restatement costs.** The
-// same spec asked again is worked out again rather than answered out of the
+// same descriptor asked again is worked out again rather than answered out of the
 // cache, which is the whole reason a source has to be told at all.
 func TestARestatedListForgetsWhatItWorkedOut(t *testing.T) {
 	src := NewListSource(namedList("alpha"))
-	spec := &Spec{Sort: []SortLevel{{Field: "name"}}}
-	_ = captions(t, src, spec)
+	descriptor := &DataSetDescriptor{Sort: []SortLevel{{Field: "name"}}}
+	_ = captions(t, src, descriptor)
 
 	src.mu.Lock()
 	held := len(src.cache)
@@ -101,7 +101,7 @@ func TestARestatedListForgetsWhatItWorkedOut(t *testing.T) {
 // off the end of it.
 func TestASequenceStatedBeforeARestatementKeepsIt(t *testing.T) {
 	src := NewListSource(namedList("alpha", "beta", "gamma"))
-	set, err := src.Open(&Spec{Sort: []SortLevel{{Field: "name"}}})
+	set, err := src.Open(&DataSetDescriptor{Sort: []SortLevel{{Field: "name"}}})
 	if err != nil {
 		t.Fatalf("stating the sequence: %v", err)
 	}
@@ -129,9 +129,9 @@ func TestASequenceStatedBeforeARestatementKeepsIt(t *testing.T) {
 func TestATreeToldItIsStaleFlattensAgain(t *testing.T) {
 	people := NewListSource(namedList("alpha", "beta"))
 	tree, err := NewTreeSource(TreeOptions{
-		Source: people,
-		Spec:   &Spec{Sort: []SortLevel{{Field: "name"}}},
-		Types:  NodeTypes{Default: &NodeType{}},
+		Source:     people,
+		Descriptor: &DataSetDescriptor{Sort: []SortLevel{{Field: "name"}}},
+		Types:      NodeTypes{Default: &NodeType{}},
 	})
 	if err != nil {
 		t.Fatalf("stating the tree: %v", err)
@@ -181,8 +181,8 @@ func twoLevels(t *testing.T) (*TreeSource, *ListSource) {
 		}),
 	})
 	tree, err := NewTreeSource(TreeOptions{
-		Source: hosts,
-		Spec:   &Spec{Sort: []SortLevel{{Field: "name"}}},
+		Source:     hosts,
+		Descriptor: &DataSetDescriptor{Sort: []SortLevel{{Field: "name"}}},
 		Types: NodeTypes{
 			Default: &NodeType{Then: Always("apps")},
 			Named: map[string]*NodeType{
@@ -304,11 +304,11 @@ func TestAnOrderSaidIsToldToEverySequence(t *testing.T) {
 }
 
 // **The configuration is not the tree's to rewrite.** An order said for a kind is
-// laid over a COPY of that level's spec, so saying nothing afterwards gives the
+// laid over a COPY of that level's descriptor, so saying nothing afterwards gives the
 // order the configuration chose rather than the last thing anybody asked for.
 //
-// The top level is where it shows: a node type's `Of` builds a fresh spec every
-// time, but `TreeOptions.Spec` is one pointer read on every build.
+// The top level is where it shows: a node type's `Of` builds a fresh descriptor every
+// time, but `TreeOptions.Descriptor` is one pointer read on every build.
 func TestAnOrderSaidAndThenUnsaidGivesTheConfigurationBack(t *testing.T) {
 	tree, _ := twoLevels(t)
 	if got := flat(t, tree); got[0] != "kestrel" {

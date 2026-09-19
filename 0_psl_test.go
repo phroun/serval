@@ -19,15 +19,17 @@ const doc = `(
   plain: "just a string"
 )`
 
-func open(t *testing.T, text string, spec *Spec) DataSet { return openAs(t, Whole, text, spec) }
+func open(t *testing.T, text string, descriptor *DataSetDescriptor) DataSet {
+	return openAs(t, Whole, text, descriptor)
+}
 
-func openAs(t *testing.T, reading Reading, text string, spec *Spec) DataSet {
+func openAs(t *testing.T, reading Reading, text string, descriptor *DataSetDescriptor) DataSet {
 	t.Helper()
 	src, err := ParsePSLSource(text, reading)
 	if err != nil {
 		t.Fatal(err)
 	}
-	v, err := src.Open(spec)
+	v, err := src.Open(descriptor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +113,7 @@ func fill(t *testing.T, v DataSet, sc *Scope) (*collector, Complete) {
 // out as one sequence because an integer ranks below a string: the items in
 // their order, then the names in theirs. No rule of its own says so.
 func TestBothOfAPSLListsCollectionsAreRecords(t *testing.T) {
-	v := open(t, doc, &Spec{})
+	v := open(t, doc, &DataSetDescriptor{})
 	out, done := fill(t, v, &Scope{Count: 10})
 	if out.joined() != `0,1,2,3,"extra","plain"` {
 		t.Errorf("the sequence is %s", out.joined())
@@ -127,7 +129,7 @@ func TestBothOfAPSLListsCollectionsAreRecords(t *testing.T) {
 // A record's fields are its own members, each under a dot: the items at their
 // positions, the keyed members by name.
 func TestARecordsFieldsAreItsOwnMembers(t *testing.T) {
-	v := open(t, doc, &Spec{})
+	v := open(t, doc, &DataSetDescriptor{})
 	out, _ := fill(t, v, &Scope{Count: 1})
 	got := out.fields[0].String()
 	if got != `{ key 0; .0 "README.md"; .size 2048 }` {
@@ -139,7 +141,7 @@ func TestARecordsFieldsAreItsOwnMembers(t *testing.T) {
 // catalogue of plain strings is filterable and sortable rather than being
 // nothing but keys.
 func TestARecordThatIsNotAListIsAKeyAndAValue(t *testing.T) {
-	v := open(t, doc, &Spec{Filter: and(eqf("key", "plain"))})
+	v := open(t, doc, &DataSetDescriptor{Filter: and(eqf("key", "plain"))})
 	out, _ := fill(t, v, &Scope{Count: 10})
 	if len(out.fields) != 1 {
 		t.Fatalf("%d records matched the key", len(out.fields))
@@ -152,7 +154,7 @@ func TestARecordThatIsNotAListIsAKeyAndAValue(t *testing.T) {
 // A field one record has and another has not is undefined rather than an
 // error, which is the whole of what a source of mixed records needs.
 func TestAFieldARecordHasNotGotIsUndefined(t *testing.T) {
-	v := open(t, doc, &Spec{Filter: &Filter{Op: OpAnd, Children: []*Filter{{Op: OpEq, Field: ".size", Values: []*Value{nil}}}}})
+	v := open(t, doc, &DataSetDescriptor{Filter: &Filter{Op: OpAnd, Children: []*Filter{{Op: OpEq, Field: ".size", Values: []*Value{nil}}}}})
 	out, _ := fill(t, v, &Scope{Count: 10})
 	if out.joined() != `"plain"` {
 		t.Errorf("the records with no size are %s", out.joined())
@@ -166,7 +168,7 @@ func TestAFieldARecordHasNotGotIsUndefined(t *testing.T) {
 // smaller than one, and `lt` says so. A filter that means "has a size, and it
 // is under a thousand" is two predicates and says both.
 func TestASortedFilteredScope(t *testing.T) {
-	v := open(t, doc, &Spec{Sort: []SortLevel{{Field: ".size", Level: Level{Descending: true}}}, Filter: and(lt(".size", 1000))})
+	v := open(t, doc, &DataSetDescriptor{Sort: []SortLevel{{Field: ".size", Level: Level{Descending: true}}}, Filter: and(lt(".size", 1000))})
 	out, done := fill(t, v, &Scope{Count: 10})
 	if out.joined() != `1,2,"extra","plain"` {
 		t.Errorf("the sequence is %s", out.joined())
@@ -182,7 +184,7 @@ func TestASortedFilteredScope(t *testing.T) {
 func TestAScopeStopsAndSaysWhereItGotTo(t *testing.T) {
 	// `plain` is a bare string and has no first item, so it leads: undefined is
 	// the bottom of the order, and it is one position like any other.
-	v := open(t, doc, &Spec{Sort: []SortLevel{{Field: ".0", Level: Level{Collation: CollateNatural}}}})
+	v := open(t, doc, &DataSetDescriptor{Sort: []SortLevel{{Field: ".0", Level: Level{Collation: CollateNatural}}}})
 	out, done := fill(t, v, &Scope{Count: 2})
 	if out.joined() != `"plain",1` {
 		t.Errorf("the first scope is %s", out.joined())
@@ -204,7 +206,7 @@ func TestAScopeStopsAndSaysWhereItGotTo(t *testing.T) {
 // A scope of no records at all costs nothing and claims nothing beyond where
 // it was asked from.
 func TestAScopeOfNoneSendsNothing(t *testing.T) {
-	v := open(t, doc, &Spec{})
+	v := open(t, doc, &DataSetDescriptor{})
 	out, done := fill(t, v, &Scope{Count: 0})
 	if len(out.keys) != 0 {
 		t.Errorf("a scope of none was sent %d record(s)", len(out.keys))
@@ -218,7 +220,7 @@ func TestAScopeOfNoneSendsNothing(t *testing.T) {
 // walk stops there rather than at the count, and says so -- which is what tells
 // the display the two runs it holds are now one.
 func TestAWalkThatReachesUntilSaysItJoined(t *testing.T) {
-	v := open(t, doc, &Spec{})
+	v := open(t, doc, &DataSetDescriptor{})
 	out, done := fill(t, v, &Scope{Until: NewInt(3), Count: 10})
 	if out.joined() != `0,1,2` {
 		t.Errorf("the records before it are %s", out.joined())
@@ -231,7 +233,7 @@ func TestAWalkThatReachesUntilSaysItJoined(t *testing.T) {
 // An `until` this sequence does not hold says nothing and stops nothing: the
 // walk runs to its count instead.
 func TestAnUntilThatIsNotHereIsNotARefusal(t *testing.T) {
-	v := open(t, doc, &Spec{})
+	v := open(t, doc, &DataSetDescriptor{})
 	out, done := fill(t, v, &Scope{Until: NewText("nobody"), Count: 2})
 	if len(out.keys) != 2 || done.Stop != StopFilled {
 		t.Errorf("it came back %v, %q", out.keys, done.Stop)
@@ -245,7 +247,7 @@ func TestAnUntilThatIsNotHereIsNotARefusal(t *testing.T) {
 // back a run the asker did not ask for, with nothing marking it as the wrong
 // one.
 func TestAnAfterThatIsNotHereIsRefused(t *testing.T) {
-	v := open(t, doc, &Spec{})
+	v := open(t, doc, &DataSetDescriptor{})
 	_, done := fill(t, v, &Scope{After: NewText("nobody"), Count: 2})
 	if done.Error == "" {
 		t.Error("a scope starting from a record that is not here was answered anyway")
@@ -265,7 +267,7 @@ func TestAScopeStartsAfterABoundaryAnywhereInTheSequence(t *testing.T) {
 	}
 	b.WriteString(")")
 
-	v := open(t, b.String(), &Spec{Sort: []SortLevel{{Field: ".n"}}})
+	v := open(t, b.String(), &DataSetDescriptor{Sort: []SortLevel{{Field: ".n"}}})
 	out, done := fill(t, v, &Scope{After: NewInt(399), Count: 3})
 	if out.joined() != "400,401,402" {
 		t.Errorf("the scope after 399 is %s", out.joined())
@@ -278,7 +280,7 @@ func TestAScopeStartsAfterABoundaryAnywhereInTheSequence(t *testing.T) {
 // A query names the fields it wants where they are fewer than the record has,
 // which is how a display asks for the skeleton of a wide sequence.
 func TestAQueryAsksForFewerFieldsThanTheRecordHas(t *testing.T) {
-	v := open(t, doc, &Spec{Fields: Record{{Name: ".size"}}})
+	v := open(t, doc, &DataSetDescriptor{Fields: Record{{Name: ".size"}}})
 	out, _ := fill(t, v, &Scope{Count: 1})
 	if got := out.fields[0].String(); got != "{ .size 2048 }" {
 		t.Errorf("the record carries %s", got)
@@ -293,7 +295,7 @@ func TestADifferentSequenceIsADifferentDataSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	byName, err := src.Open(&Spec{Sort: []SortLevel{{Field: ".0", Level: Level{Collation: CollateNatural}}}})
+	byName, err := src.Open(&DataSetDescriptor{Sort: []SortLevel{{Field: ".0", Level: Level{Collation: CollateNatural}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +304,7 @@ func TestADifferentSequenceIsADifferentDataSet(t *testing.T) {
 		t.Errorf("by name the first record is %s", out.joined())
 	}
 
-	bySize, err := src.Open(&Spec{Sort: []SortLevel{{Field: ".size", Level: Level{Descending: true}}}})
+	bySize, err := src.Open(&DataSetDescriptor{Sort: []SortLevel{{Field: ".size", Level: Level{Descending: true}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +322,7 @@ func TestASortNobodyCanProduceIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := src.Open(&Spec{Sort: []SortLevel{{Field: ".name", Level: Level{Collation: "turkish"}}}}); err == nil {
+	if _, err := src.Open(&DataSetDescriptor{Sort: []SortLevel{{Field: ".name", Level: Level{Collation: "turkish"}}}}); err == nil {
 		t.Error("a collation nobody carries was accepted")
 	}
 }
@@ -332,12 +334,12 @@ func TestOneSequenceIsOrderedOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec := &Spec{Sort: []SortLevel{{Field: ".size"}}}
-	a, err := src.Open(spec)
+	descriptor := &DataSetDescriptor{Sort: []SortLevel{{Field: ".size"}}}
+	a, err := src.Open(descriptor)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := src.Open(&Spec{Sort: []SortLevel{{Field: ".size"}}})
+	b, err := src.Open(&DataSetDescriptor{Sort: []SortLevel{{Field: ".size"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +348,7 @@ func TestOneSequenceIsOrderedOnce(t *testing.T) {
 	}
 
 	// And an order pushed out by newer ones is built again rather than wrong.
-	for _, s := range []*Spec{
+	for _, s := range []*DataSetDescriptor{
 		{Sort: []SortLevel{{Field: ".0"}}},
 		{Sort: []SortLevel{{Field: "key", Level: Level{Descending: true}}}},
 		{Sort: []SortLevel{{Field: ".size", Level: Level{Descending: true}}}},
@@ -356,7 +358,7 @@ func TestOneSequenceIsOrderedOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	c, err := src.Open(spec)
+	c, err := src.Open(descriptor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,7 +407,7 @@ func TestMembersNamesTheMembersAlone(t *testing.T) {
   (name: "build.sh", size: 310),
   (name: "go.mod", size: 96)
 )`
-	v := openAs(t, Members, table, &Spec{Sort: []SortLevel{{Field: "size", Level: Level{Descending: true}}}})
+	v := openAs(t, Members, table, &DataSetDescriptor{Sort: []SortLevel{{Field: "size", Level: Level{Descending: true}}}})
 	out, done := fill(t, v, &Scope{Count: 2})
 	if out.joined() != "0,1" {
 		t.Errorf("by size the scope is %s", out.joined())
@@ -422,14 +424,14 @@ func TestMembersNamesTheMembersAlone(t *testing.T) {
 // are members like any other -- present if the document wrote them, undefined
 // if it did not -- and neither is the record's own.
 func TestMembersCannotNameTheRecordItself(t *testing.T) {
-	v := openAs(t, Members, doc, &Spec{Filter: &Filter{Op: OpAnd, Children: []*Filter{{Op: OpNe, Field: "key", Values: []*Value{nil}}}}})
+	v := openAs(t, Members, doc, &DataSetDescriptor{Filter: &Filter{Op: OpAnd, Children: []*Filter{{Op: OpNe, Field: "key", Values: []*Value{nil}}}}})
 	out, _ := fill(t, v, &Scope{Count: 10})
 	if len(out.keys) != 0 {
 		t.Errorf("`key` reached something under Members: %s", out.joined())
 	}
 
 	// A record that is not a list has no members, so it carries nothing.
-	v = openAs(t, Members, doc, &Spec{})
+	v = openAs(t, Members, doc, &DataSetDescriptor{})
 	out, _ = fill(t, v, &Scope{Count: 10})
 	if got := out.fields[len(out.fields)-1].String(); got != "{}" {
 		t.Errorf("a bare value carries %s under Members", got)
@@ -446,13 +448,13 @@ func TestMembersCannotNameTheRecordItself(t *testing.T) {
 func TestBothReadingsReachAMemberCalledKey(t *testing.T) {
 	const meta = `( _bundle: (key: "figaro", author: "Jeffrey R. Day") )`
 
-	v := open(t, meta, &Spec{Filter: and(eqf(".key", "figaro"))})
+	v := open(t, meta, &DataSetDescriptor{Filter: and(eqf(".key", "figaro"))})
 	out, _ := fill(t, v, &Scope{Count: 10})
 	if out.joined() != `"_bundle"` {
 		t.Errorf("under Whole the member called key found %s", out.joined())
 	}
 
-	v = openAs(t, Members, meta, &Spec{Filter: and(eqf("key", "figaro"))})
+	v = openAs(t, Members, meta, &DataSetDescriptor{Filter: and(eqf("key", "figaro"))})
 	out, _ = fill(t, v, &Scope{Count: 10})
 	if out.joined() != `"_bundle"` {
 		t.Errorf("under Members the member called key found %s", out.joined())
@@ -483,13 +485,13 @@ func TestWholeCarriesTheKeyAndValueAsFields(t *testing.T) {
 func TestUnderWholeANameWithoutADotIsNotAMember(t *testing.T) {
 	const trap = `( (ame: "trap", name: "real") )`
 
-	v := open(t, trap, &Spec{Filter: and(eqf("name", "trap"))})
+	v := open(t, trap, &DataSetDescriptor{Filter: and(eqf("name", "trap"))})
 	out, _ := fill(t, v, &Scope{Count: 10})
 	if len(out.keys) != 0 {
 		t.Errorf("an undotted name reached a member: %s", out.joined())
 	}
 
-	v = open(t, trap, &Spec{Filter: and(eqf(".name", "real"))})
+	v = open(t, trap, &DataSetDescriptor{Filter: and(eqf(".name", "real"))})
 	out, _ = fill(t, v, &Scope{Count: 10})
 	if out.joined() != "0" {
 		t.Errorf("the dotted name found %s", out.joined())
@@ -507,20 +509,20 @@ func TestABareWordIsASymbolAndAQuotedOneIsAString(t *testing.T) {
   (name: "a", kind: text),
   (name: "b", kind: "text")
 )`
-	v := open(t, kinds, &Spec{Filter: &Filter{Op: OpAnd, Children: []*Filter{{Op: OpEq, Field: ".kind", Values: []*Value{NewSymbol("text")}}}}})
+	v := open(t, kinds, &DataSetDescriptor{Filter: &Filter{Op: OpAnd, Children: []*Filter{{Op: OpEq, Field: ".kind", Values: []*Value{NewSymbol("text")}}}}})
 	out, _ := fill(t, v, &Scope{Count: 10})
 	if out.joined() != "0" {
 		t.Errorf("the word text found %s", out.joined())
 	}
 
-	v = open(t, kinds, &Spec{Filter: and(eqf(".kind", "text"))})
+	v = open(t, kinds, &DataSetDescriptor{Filter: and(eqf(".kind", "text"))})
 	out, _ = fill(t, v, &Scope{Count: 10})
 	if out.joined() != "1" {
 		t.Errorf("the string text found %s", out.joined())
 	}
 
 	// And a symbol goes out as one, which is what the far end reads back.
-	v = open(t, kinds, &Spec{})
+	v = open(t, kinds, &DataSetDescriptor{})
 	out, _ = fill(t, v, &Scope{Count: 1})
 	if got := out.fields[0].String(); got != `{ key 0; .kind text; .name "a" }` {
 		t.Errorf("the record carries %s", got)
@@ -565,7 +567,7 @@ func TestEverySymbolCrossesAsASymbol(t *testing.T) {
 // `undefined` says the same thing in both languages, so it crosses as the word
 // rather than as an identifier that happens to be spelled that way.
 func TestTheWordUndefinedCrossesAsUndefined(t *testing.T) {
-	v := open(t, `( (thumbnail: undefined), (thumbnail: "x") )`, &Spec{Filter: and(&Filter{Op: OpEq, Field: ".thumbnail", Values: []*Value{nil}})})
+	v := open(t, `( (thumbnail: undefined), (thumbnail: "x") )`, &DataSetDescriptor{Filter: and(&Filter{Op: OpEq, Field: ".thumbnail", Values: []*Value{nil}})})
 	out, _ := fill(t, v, &Scope{Count: 10})
 	if out.joined() != "0" {
 		t.Errorf("undefined found %s", out.joined())
@@ -583,20 +585,20 @@ func TestReversedIsTheMirrorOfTheSequence(t *testing.T) {
 	const tied = `( (n: "a", size: 10), (n: "b", size: 10), (n: "c", size: 99) )`
 
 	for _, c := range []struct {
-		what  string
-		spec  *Spec
-		scope *Scope
-		want  string
+		what       string
+		descriptor *DataSetDescriptor
+		scope      *Scope
+		want       string
 	}{
 		{"by size", bySize(), &Scope{Count: 10}, "0,1,2"},
 		{"by size, reversed", bySize(), &Scope{Count: 10, Reversed: true}, "2,1,0"},
 		{"by size descending",
-			&Spec{Sort: []SortLevel{{Field: ".size", Level: Level{Descending: true}}}},
+			&DataSetDescriptor{Sort: []SortLevel{{Field: ".size", Level: Level{Descending: true}}}},
 			&Scope{Count: 10}, "2,0,1"},
 		{"unsorted", unsorted(), &Scope{Count: 10}, "0,1,2"},
 		{"unsorted, reversed", unsorted(), &Scope{Count: 10, Reversed: true}, "2,1,0"},
 	} {
-		v := open(t, tied, c.spec)
+		v := open(t, tied, c.descriptor)
 		out, _ := fill(t, v, c.scope)
 		if out.joined() != c.want {
 			t.Errorf("%s gave %s, want %s", c.what, out.joined(), c.want)
@@ -613,7 +615,7 @@ func TestReversedNeedsNoNameForTheIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	set, err := src.Open(&Spec{})
+	set, err := src.Open(&DataSetDescriptor{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -633,7 +635,7 @@ func TestOneSequenceIsReadBothWays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	set, err := src.Open(&Spec{Sort: []SortLevel{{Field: ".size"}}})
+	set, err := src.Open(&DataSetDescriptor{Sort: []SortLevel{{Field: ".size"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -664,7 +666,7 @@ func reverseOf(s string) string {
 // nothing at all would leave it with no way to ask for the next scope but to
 // start again.
 func TestAScopeThatSentNothingIsCompleteUpToWhereItStarted(t *testing.T) {
-	v := open(t, doc, &Spec{})
+	v := open(t, doc, &DataSetDescriptor{})
 	_, done := fill(t, v, &Scope{After: NewInt(1), Count: 0})
 	if got := valueText(done.Watermark); got != "1" {
 		t.Errorf("a scope of none from 1 claims %s", got)
@@ -685,9 +687,9 @@ type reader struct {
 	set DataSet
 }
 
-func opened(t *testing.T, src Source, spec *Spec) *reader {
+func opened(t *testing.T, src Source, descriptor *DataSetDescriptor) *reader {
 	t.Helper()
-	set, err := src.Open(spec)
+	set, err := src.Open(descriptor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -709,9 +711,9 @@ func (r *reader) scope(sc *Scope) (*collector, Complete) {
 }
 
 // read is one scope of a sequence nobody reads twice.
-func read(t *testing.T, src Source, spec *Spec, sc *Scope) (*collector, Complete) {
+func read(t *testing.T, src Source, descriptor *DataSetDescriptor, sc *Scope) (*collector, Complete) {
 	t.Helper()
-	return opened(t, src, spec).scope(sc)
+	return opened(t, src, descriptor).scope(sc)
 }
 
 // --- the sequences and filters the tests name --------------------------
@@ -720,9 +722,9 @@ func read(t *testing.T, src Source, spec *Spec, sc *Scope) (*collector, Complete
 // point of it -- so a test states what it wants in the shapes the library
 // takes, and these are here only to keep the tests reading as sentences.
 
-func bySize() *Spec   { return &Spec{Sort: []SortLevel{{Field: ".size"}}} }
-func byName() *Spec   { return &Spec{Sort: []SortLevel{{Field: ".name"}}} }
-func unsorted() *Spec { return &Spec{} }
+func bySize() *DataSetDescriptor   { return &DataSetDescriptor{Sort: []SortLevel{{Field: ".size"}}} }
+func byName() *DataSetDescriptor   { return &DataSetDescriptor{Sort: []SortLevel{{Field: ".name"}}} }
+func unsorted() *DataSetDescriptor { return &DataSetDescriptor{} }
 
 func and(cs ...*Filter) *Filter { return &Filter{Op: OpAnd, Children: cs} }
 func not(cs ...*Filter) *Filter { return &Filter{Op: OpNot, Children: cs} }
@@ -785,9 +787,9 @@ func (l *listSource) asSubsets() *listSource {
 	return &listSource{rows: l.rows, subsets: true}
 }
 
-func (l *listSource) Open(spec *Spec) (DataSet, error) {
+func (l *listSource) Open(descriptor *DataSetDescriptor) (DataSet, error) {
 	rows := append([]listRow(nil), l.rows...)
-	if len(spec.Sort) > 0 && spec.Sort[0].Field == ".size" {
+	if len(descriptor.Sort) > 0 && descriptor.Sort[0].Field == ".size" {
 		sort.SliceStable(rows, func(i, j int) bool { return rows[i].size < rows[j].size })
 	}
 	return &listSet{rows: rows, subsets: l.subsets}, nil

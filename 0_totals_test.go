@@ -234,7 +234,7 @@ func TestSubsetsThatCoverARecordLeaveItEntire(t *testing.T) {
 // ever finish.
 func TestTheTotalsCrossASourceThatRelays(t *testing.T) {
 	ownCache(t, 1<<20, 1<<20)
-	narrow := &Spec{
+	narrow := &DataSetDescriptor{
 		Sort:   []SortLevel{{Field: ".name"}},
 		Fields: Record{{Name: ".name"}},
 	}

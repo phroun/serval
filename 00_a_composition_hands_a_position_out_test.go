@@ -12,13 +12,13 @@ package serval
 
 import "testing"
 
-func composedOver(t *testing.T, spec *Spec, in ...Include) (*ComposedSource, DataSet) {
+func composedOver(t *testing.T, descriptor *DataSetDescriptor, in ...Include) (*ComposedSource, DataSet) {
 	t.Helper()
 	c, err := NewComposedSource(in...)
 	if err != nil {
 		t.Fatal(err)
 	}
-	set, err := c.Open(spec)
+	set, err := c.Open(descriptor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +27,7 @@ func composedOver(t *testing.T, spec *Spec, in ...Include) (*ComposedSource, Dat
 
 // A position falls in one include, and that include is handed it.
 func TestACompositionHandsAPositionToTheIncludeThatHoldsIt(t *testing.T) {
-	_, set := composedOver(t, &Spec{},
+	_, set := composedOver(t, &DataSetDescriptor{},
 		Include{Name: "a", Source: numbered(100)},
 		Include{Name: "b", Source: numbered(100)},
 		Include{Name: "c", Source: numbered(100)})
@@ -62,7 +62,7 @@ func TestACompositionHandsAPositionToTheIncludeThatHoldsIt(t *testing.T) {
 // And it is a true run of the sequence from there: what follows the position is
 // what follows it, across a block boundary like anywhere else.
 func TestWhatFollowsAPositionIsWhatFollowsIt(t *testing.T) {
-	_, set := composedOver(t, &Spec{},
+	_, set := composedOver(t, &DataSetDescriptor{},
 		Include{Name: "a", Source: numbered(3)},
 		Include{Name: "b", Source: numbered(3)})
 	defer set.Close()
@@ -81,7 +81,7 @@ func TestWhatFollowsAPositionIsWhatFollowsIt(t *testing.T) {
 
 // Past the end is the last record, as it is for a source holding its own.
 func TestACompositionClampsAPositionPastTheEnd(t *testing.T) {
-	_, set := composedOver(t, &Spec{},
+	_, set := composedOver(t, &DataSetDescriptor{},
 		Include{Name: "a", Source: numbered(5)},
 		Include{Name: "b", Source: numbered(5)})
 	defer set.Close()
@@ -99,7 +99,7 @@ func TestACompositionClampsAPositionPastTheEnd(t *testing.T) {
 // the place walks back inside itself, the ones before it walk back from their
 // ends, and the ones after it have nothing to say.
 func TestACompositionSharesAPositionOutBackwards(t *testing.T) {
-	_, set := composedOver(t, &Spec{},
+	_, set := composedOver(t, &DataSetDescriptor{},
 		Include{Name: "a", Source: numbered(4)},
 		Include{Name: "b", Source: numbered(4)})
 	defer set.Close()
@@ -123,7 +123,7 @@ func TestACompositionSharesAPositionOutBackwards(t *testing.T) {
 // them, and not the order they were declared in. Sharing a position out by
 // declaration order would hand it to the wrong include.
 func TestTheBlocksAreInNameOrderAndNotDeclarationOrder(t *testing.T) {
-	_, set := composedOver(t, &Spec{},
+	_, set := composedOver(t, &DataSetDescriptor{},
 		Include{Name: "zulu", Source: numbered(10)},
 		Include{Name: "alpha", Source: numbered(10)})
 	defer set.Close()
@@ -147,7 +147,7 @@ func TestTheBlocksAreInNameOrderAndNotDeclarationOrder(t *testing.T) {
 // second record, skips the fourth altogether, and reports neither. A window
 // with holes cannot be corrected by a reader that cannot see them.
 func TestASortedCompositionSharesNothingOut(t *testing.T) {
-	_, set := composedOver(t, &Spec{Sort: []SortLevel{{Field: "n"}}},
+	_, set := composedOver(t, &DataSetDescriptor{Sort: []SortLevel{{Field: "n"}}},
 		Include{Name: "a", Source: numbered(50)},
 		Include{Name: "b", Source: numbered(50)})
 	defer set.Close()
@@ -165,7 +165,7 @@ func TestASortedCompositionSharesNothingOut(t *testing.T) {
 // An include whose length is only a floor leaves every boundary after it a
 // guess, so the position is not shared out at all.
 func TestAnIncludeThatCannotCountItselfStopsTheSharing(t *testing.T) {
-	_, set := composedOver(t, &Spec{},
+	_, set := composedOver(t, &DataSetDescriptor{},
 		Include{Name: "a", Source: numbered(50)},
 		Include{Name: "b", Source: uncounted{numbered(50)}})
 	defer set.Close()
@@ -183,8 +183,8 @@ func TestAnIncludeThatCannotCountItselfStopsTheSharing(t *testing.T) {
 // records it has -- which is every source that has to ask somebody else.
 type uncounted struct{ Source }
 
-func (u uncounted) Open(spec *Spec) (DataSet, error) {
-	set, err := u.Source.Open(spec)
+func (u uncounted) Open(descriptor *DataSetDescriptor) (DataSet, error) {
+	set, err := u.Source.Open(descriptor)
 	if err != nil {
 		return nil, err
 	}

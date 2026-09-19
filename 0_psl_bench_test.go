@@ -39,10 +39,10 @@ func benchSource(tb testing.TB, n int) *ListSource {
 }
 
 // byNameOver is the sequence the benchmarks read: names in natural order, and
-// a floor under the size so that every spec is a different sequence and the
+// a floor under the size so that every descriptor is a different sequence and the
 // orderings the source keeps are never the answer.
-func byNameOver(size int) *Spec {
-	return &Spec{
+func byNameOver(size int) *DataSetDescriptor {
+	return &DataSetDescriptor{
 		Sort: []SortLevel{{Field: "name", Level: Level{Collation: CollateNatural}}},
 		Filter: &Filter{Op: OpAnd, Children: []*Filter{
 			{Op: OpGe, Field: "size", Values: []*Value{NewInt(int64(size))}},
@@ -50,8 +50,8 @@ func byNameOver(size int) *Spec {
 	}
 }
 
-func byNameNatural() *Spec {
-	return &Spec{Sort: []SortLevel{{Field: "name", Level: Level{Collation: CollateNatural}}}}
+func byNameNatural() *DataSetDescriptor {
+	return &DataSetDescriptor{Sort: []SortLevel{{Field: "name", Level: Level{Collation: CollateNatural}}}}
 }
 
 type counter struct {
@@ -90,9 +90,9 @@ func BenchmarkStateTheSequence(b *testing.B) {
 	src := benchSource(b, benchRecords)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		// A spec of its own each time, so the cache never answers.
-		spec := byNameOver(i)
-		if _, err := src.Open(spec); err != nil {
+		// A descriptor of its own each time, so the cache never answers.
+		descriptor := byNameOver(i)
+		if _, err := src.Open(descriptor); err != nil {
 			b.Fatal(err)
 		}
 	}

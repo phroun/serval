@@ -161,34 +161,34 @@ func (c *ComposedSource) Includes() []Include {
 // Each include gets the filter read in its own terms: an identity this source
 // made says which include it came from, so `filter={ id (left/1) }` asks
 // `left` about its own record 1 and never opens `right` at all.
-func (c *ComposedSource) Open(spec *Spec) (DataSet, error) {
-	if spec == nil {
-		spec = &Spec{}
+func (c *ComposedSource) Open(descriptor *DataSetDescriptor) (DataSet, error) {
+	if descriptor == nil {
+		descriptor = &DataSetDescriptor{}
 	}
-	steps, levels := plan(spec)
+	steps, levels := plan(descriptor)
 	set := &composedSet{
-		src: c, spec: spec, steps: steps, levels: levels,
-		byID: hasID(spec.Filter),
+		src: c, descriptor: descriptor, steps: steps, levels: levels,
+		byID: hasID(descriptor.Filter),
 	}
 	// The slots are named as the parts are gathered, because a note's vector
 	// holds one position per PART and a filter may rule an include out of a
 	// sequence entirely. See placebook.
 	var slots []string
 	for _, in := range c.includes {
-		if _, possible := narrow(spec.Filter, in.Name); possible {
+		if _, possible := narrow(descriptor.Filter, in.Name); possible {
 			slots = append(slots, in.Name)
 		}
 	}
-	notes := c.notes.of(spec, 2, slots...)
+	notes := c.notes.of(descriptor, 2, slots...)
 	set.placed, set.stood = notes[0], notes[1]
 	for _, in := range c.includes {
-		asked, possible := narrow(spec.Filter, in.Name)
+		asked, possible := narrow(descriptor.Filter, in.Name)
 		if !possible {
 			continue
 		}
-		sub := *spec
+		sub := *descriptor
 		sub.Filter = asked
-		sub.Fields = withSortFields(spec)
+		sub.Fields = withSortFields(descriptor)
 		child, err := in.Source.Open(&sub)
 		if err != nil {
 			set.Close()
@@ -207,12 +207,12 @@ func (c *ComposedSource) Open(spec *Spec) (DataSet, error) {
 // undefined for every record -- and the merge would then trust each include's
 // arrival order over an order it could not see. Asking for them costs a field
 // or two and is a superset of what was wanted, which is always allowed.
-func withSortFields(spec *Spec) Record {
-	if len(spec.Fields) == 0 || len(spec.Sort) == 0 {
-		return spec.Fields
+func withSortFields(descriptor *DataSetDescriptor) Record {
+	if len(descriptor.Fields) == 0 || len(descriptor.Sort) == 0 {
+		return descriptor.Fields
 	}
-	out := append(Record(nil), spec.Fields...)
-	for _, l := range spec.Sort {
+	out := append(Record(nil), descriptor.Fields...)
+	for _, l := range descriptor.Sort {
 		if !out.Has(l.Field) {
 			out = append(out, &Field{Name: l.Field})
 		}
@@ -433,10 +433,10 @@ type step struct{ field string }
 // The direction is not here. A scope is walked either way over one prepared
 // sequence, so which way is decided when the scope is read, not when the
 // sequence is stated.
-func plan(spec *Spec) ([]step, []Level) {
-	steps := make([]step, 0, len(spec.Sort)+1)
-	levels := make([]Level, 0, len(spec.Sort)+2)
-	for _, l := range spec.Sort {
+func plan(descriptor *DataSetDescriptor) ([]step, []Level) {
+	steps := make([]step, 0, len(descriptor.Sort)+1)
+	levels := make([]Level, 0, len(descriptor.Sort)+2)
+	for _, l := range descriptor.Sort {
 		steps = append(steps, step{field: l.Field})
 		levels = append(levels, l.Level)
 	}
@@ -541,12 +541,12 @@ func childKey(text string) *Value {
 // --- the sequence --------------------------------------------------------
 
 type composedSet struct {
-	src    *ComposedSource
-	spec   *Spec
-	parts  []part
-	steps  []step
-	levels []Level
-	byID   bool // the filter tests identity, so records are read here too
+	src        *ComposedSource
+	descriptor *DataSetDescriptor
+	parts      []part
+	steps      []step
+	levels     []Level
+	byID       bool // the filter tests identity, so records are read here too
 
 	// placed is where every include stood when this sequence handed on a
 	// record. It belongs to the sequence rather than to this reading of it --
@@ -842,7 +842,7 @@ func (g *gathering) take(i int, key *Value, fields Record, has Totals, whole boo
 	// What the filter says about the composed key is settled here, because no
 	// include could say it: the include was asked a question in its own terms,
 	// which admits at least every record this one does.
-	if g.set.byID && idMatch(g.set.spec.Filter, rec.key) == no {
+	if g.set.byID && idMatch(g.set.descriptor.Filter, rec.key) == no {
 		return nil
 	}
 	// An include that answered from before where the scope starts -- one that
@@ -1102,14 +1102,14 @@ func (g *gathering) close() {
 // blocks reports whether this sequence lays each include's records out in one
 // unbroken run.
 //
-// It does exactly when the spec names no sort. The levels are then the
+// It does exactly when the descriptor names no sort. The levels are then the
 // include's name and the child's own identity, so every record of one include
 // falls before every record of the next and the sequence is the includes end to
 // end, in the order their NAMES put them.
 //
 // Name a sort and they interleave by value instead, and there is no longer any
 // arithmetic that turns a position in the whole into a position in each part.
-func (s *composedSet) blocks() bool { return len(s.spec.Sort) == 0 }
+func (s *composedSet) blocks() bool { return len(s.descriptor.Sort) == 0 }
 
 // share hands a position out to the includes: where each of them starts so that
 // the merge begins at that place in the sequence, and the place it will

@@ -99,10 +99,10 @@ func (f TreeFields) orElse(d TreeFields) TreeFields {
 
 // TreeOptions is everything a tree is made of.
 type TreeOptions struct {
-	// Source and Spec are the TOP LEVEL: where its rows come from and which of
-	// them, in what order. A nil Spec is all of them, unsorted.
-	Source Source
-	Spec   *Spec
+	// Source and DataSetDescriptor are the TOP LEVEL: where its rows come from and which of
+	// them, in what order. A nil DataSetDescriptor is all of them, unsorted.
+	Source     Source
+	Descriptor *DataSetDescriptor
 
 	// Types is what kind each row is. **The top level's rows are the DEFAULT
 	// kind**, so where the top level's rows come from is here and what they ARE
@@ -310,22 +310,22 @@ func (t *TreeSource) SortBy(byKind map[string][]SortLevel) {
 	t.tell()
 }
 
-// sortFor is the spec a level is read by, with whatever was said about this
+// sortFor is the descriptor a level is read by, with whatever was said about this
 // kind's order in place of what the configuration says.
 //
-// The spec is COPIED where there is something to say, because it is the caller's
+// The descriptor is COPIED where there is something to say, because it is the caller's
 // -- a node type's `Of` may hand back the same one every time, and writing a sort
 // into it would be rewriting the configuration.
-func (t *TreeSource) sortFor(kind string, spec *Spec) *Spec {
+func (t *TreeSource) sortFor(kind string, descriptor *DataSetDescriptor) *DataSetDescriptor {
 	t.mu.Lock()
 	levels, said := t.order[kind]
 	t.mu.Unlock()
 	if !said {
-		return spec
+		return descriptor
 	}
-	out := Spec{}
-	if spec != nil {
-		out = *spec
+	out := DataSetDescriptor{}
+	if descriptor != nil {
+		out = *descriptor
 	}
 	out.Sort = levels
 	return &out
@@ -422,23 +422,23 @@ func (t *TreeSource) tell() {
 // than sorted. It does not fall out of CompareLevels either: that stops where
 // the shorter run ends and returns 0, so `[a]` and `[a, b]` compare EQUAL rather
 // than parent-before-child, and a tuple per level cannot express a
-// varying-depth path. Each LEVEL is sorted, by its own spec, and the pre-order
+// varying-depth path. Each LEVEL is sorted, by its own descriptor, and the pre-order
 // is laid over that.
 //
 // A filter is the SHALLOW one: it is asked of the rows at every level, and a
 // parent that does not match is gone and its children with it. Deep filtering --
 // keeping a parent that does not match where a descendant does -- is eager by
 // nature and is not here yet.
-func (t *TreeSource) Open(spec *Spec) (DataSet, error) {
-	if spec != nil && len(spec.Sort) > 0 {
+func (t *TreeSource) Open(descriptor *DataSetDescriptor) (DataSet, error) {
+	if descriptor != nil && len(descriptor.Sort) > 0 {
 		return nil, fmt.Errorf(
 			"tree: a sort of %q, and a tree's order is its own: pre-order is built "+
 				"rather than sorted, and each level carries its own sort",
-			spec.Sort[0].Field)
+			descriptor.Sort[0].Field)
 	}
 	set := &treeDataSet{tree: t, at: map[string]int{}}
-	if spec != nil {
-		set.shallow = spec.Filter
+	if descriptor != nil {
+		set.shallow = descriptor.Filter
 	}
 	// **Stating a sequence does not walk it.** How far to flatten is the SCOPE's
 	// question, and no scope has been asked yet -- so a walk here could only guess,
@@ -645,9 +645,9 @@ func (v *treeDataSet) walk() error {
 
 	d := &descent{set: v, tree: v.tree, want: budget, left: budget}
 	// The top level's rows are of the default kind, read out of the tree's own
-	// source by the tree's own spec.
+	// source by the tree's own descriptor.
 	top := v.tree.opt.Types.Default
-	err := d.level("", v.tree.opt.Source, v.tree.opt.Spec, top.Standing,
+	err := d.level("", v.tree.opt.Source, v.tree.opt.Descriptor, top.Standing,
 		Node{}, 0, nil, nil)
 
 	v.mu.Lock()
@@ -832,13 +832,13 @@ func (d *descent) from(nt *NodeType) *NodeType {
 // keyed differently on purpose: a mark segment is a path where there is one, and
 // a revisit is counted on the record's IDENTITY always -- a cycle appends a
 // segment each lap, so the path is the thing GROWING and cannot be what notices.
-func (d *descent) level(kind string, src Source, spec *Spec, st Standing,
+func (d *descent) level(kind string, src Source, descriptor *DataSetDescriptor, st Standing,
 	above Node, depth int, chain []string, seen []standingAt) error {
 
 	nt := d.tree.opt.Types.Get(kind)
 
-	spec = d.tree.sortFor(kind, d.withShallow(spec))
-	set, err := src.Open(spec)
+	descriptor = d.tree.sortFor(kind, d.withShallow(descriptor))
+	set, err := src.Open(descriptor)
 	if err != nil {
 		return err
 	}
@@ -965,22 +965,22 @@ func laps(seen []standingAt, at standingAt) int {
 	return n
 }
 
-// withShallow puts the sequence's own filter on a level's spec.
+// withShallow puts the sequence's own filter on a level's descriptor.
 //
 // A shallow filter is asked at every level independently, so a parent that does
 // not match is gone and its children with it. Deep filtering -- keeping a parent
 // where a DESCENDANT matches -- is a claim about everything beneath and cannot
 // be made without looking, so it is eager by nature and is not here.
-func (d *descent) withShallow(spec *Spec) *Spec {
+func (d *descent) withShallow(descriptor *DataSetDescriptor) *DataSetDescriptor {
 	if d.set.shallow == nil {
-		if spec == nil {
-			return &Spec{}
+		if descriptor == nil {
+			return &DataSetDescriptor{}
 		}
-		return spec
+		return descriptor
 	}
-	out := Spec{}
-	if spec != nil {
-		out = *spec
+	out := DataSetDescriptor{}
+	if descriptor != nil {
+		out = *descriptor
 	}
 	if out.Filter == nil {
 		out.Filter = d.set.shallow
@@ -994,7 +994,7 @@ func (d *descent) withShallow(spec *Spec) *Spec {
 // said.**
 //
 // The field first, where the row can say, which is free. Then a count of the
-// child spec, which answers without reading a record -- Open, count, Close --
+// child descriptor, which answers without reading a record -- Open, count, Close --
 // and which is exact over records in hand. Then Unknown, which CountOf answers
 // by itself for anything that is not Counting, and which means draw the twisty
 // and find out on opening.

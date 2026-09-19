@@ -140,22 +140,22 @@ type Notice struct {
 
 // Stale tells this wrapper that something it may be holding is no longer true.
 //
-// The spec names the sequence the extent is stated in, and a nil one says the
+// The descriptor names the sequence the extent is stated in, and a nil one says the
 // notice is about records and not about anyone's order -- which is what a
 // record known to the source but placed in no live sequence needs, there being
 // no stretch to name it in.
 //
 // Nothing is fetched. What is no longer true is let go of.
-func (c *CachedSource) Stale(spec *Spec, n Notice) {
+func (c *CachedSource) Stale(descriptor *DataSetDescriptor, n Notice) {
 	var ds dataSet
 	var roles Roles
-	if spec != nil {
+	if descriptor != nil {
 		ds = dataSet{
 			source:  c.key,
-			set:     c.key + "\x00" + dataSetKey(spec),
-			members: c.key + "\x00" + FilterKey(spec.Filter),
+			set:     c.key + "\x00" + dataSetKey(descriptor),
+			members: c.key + "\x00" + FilterKey(descriptor.Filter),
 		}
-		roles = spec.Roles()
+		roles = descriptor.Roles()
 	} else {
 		ds = dataSet{source: c.key}
 	}

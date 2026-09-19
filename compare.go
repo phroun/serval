@@ -5,11 +5,11 @@ package serval
 // A sequence's records come from more than one place -- some held here, some
 // known only to something else that has to be asked -- and each place orders
 // what it holds before the answers are folded together. That only works if both
-// compute the SAME order from the same spec without conferring, so the rules
+// compute the SAME order from the same descriptor without conferring, so the rules
 // are exact, small enough to implement twice, and free of anything whose answer
 // depends on the machine or the locale.
 //
-// docs/ordering.md is the spec this implements.
+// docs/ordering.md is the descriptor this implements.
 
 import (
 	"math"

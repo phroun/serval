@@ -34,8 +34,8 @@ type counting struct {
 	counted int // how often it was asked how many records there are
 }
 
-func (c *counting) Open(spec *Spec) (DataSet, error) {
-	v, err := c.child.Open(spec)
+func (c *counting) Open(descriptor *DataSetDescriptor) (DataSet, error) {
+	v, err := c.child.Open(descriptor)
 	if err != nil {
 		return nil, err
 	}
@@ -88,9 +88,9 @@ func cached(t *testing.T, text string) (*CachedSource, *counting) {
 
 // draw opens a sequence, reads one scope out of it and lets it go, which is
 // what a reader that asks twice actually does.
-func draw(t *testing.T, src Source, spec *Spec, sc *Scope) (*collector, Complete) {
+func draw(t *testing.T, src Source, descriptor *DataSetDescriptor, sc *Scope) (*collector, Complete) {
 	t.Helper()
-	v, err := src.Open(spec)
+	v, err := src.Open(descriptor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +225,7 @@ func TestAQueryIsAnsweredOnlyWhereItsFieldsAreKnown(t *testing.T) {
 	ownCache(t, 1<<20, 1<<20)
 	src, n := cached(t, twoWays)
 
-	named := &Spec{Sort: []SortLevel{{Field: ".name"}}, Fields: Record{{Name: ".name"}}}
+	named := &DataSetDescriptor{Sort: []SortLevel{{Field: ".name"}}, Fields: Record{{Name: ".name"}}}
 	draw(t, src, named, &Scope{Count: 4})
 	was := n.reads
 
@@ -236,7 +236,7 @@ func TestAQueryIsAnsweredOnlyWhereItsFieldsAreKnown(t *testing.T) {
 	}
 
 	// One field more: not held, so it is asked -- and then it is.
-	both := &Spec{Sort: []SortLevel{{Field: ".name"}},
+	both := &DataSetDescriptor{Sort: []SortLevel{{Field: ".name"}},
 		Fields: Record{{Name: ".name"}, {Name: ".size"}}}
 	draw(t, src, both, &Scope{Count: 4})
 	if n.reads != was+1 {
@@ -263,7 +263,7 @@ func TestAFieldARecordHasNotGotIsAnsweredWithoutAskingTwice(t *testing.T) {
 	ownCache(t, 1<<20, 1<<20)
 	src, n := cached(t, doc)
 
-	sized := &Spec{Sort: []SortLevel{{Field: ".name"}},
+	sized := &DataSetDescriptor{Sort: []SortLevel{{Field: ".name"}},
 		Fields: Record{{Name: ".size"}}}
 	out, _ := draw(t, src, sized, &Scope{Count: 9})
 
@@ -300,15 +300,15 @@ func TestTheTotalsSettleAFieldNobodyAskedAbout(t *testing.T) {
 
 	// `twoWays` records carry three members: key, .name and .size. Ask for two
 	// of them, then the third.
-	draw(t, src, &Spec{Sort: []SortLevel{{Field: ".name"}},
+	draw(t, src, &DataSetDescriptor{Sort: []SortLevel{{Field: ".name"}},
 		Fields: Record{{Name: "key"}, {Name: ".name"}}}, &Scope{Count: 4})
-	draw(t, src, &Spec{Sort: []SortLevel{{Field: ".name"}},
+	draw(t, src, &DataSetDescriptor{Sort: []SortLevel{{Field: ".name"}},
 		Fields: Record{{Name: ".size"}}}, &Scope{Count: 4})
 	was := n.reads
 
 	// Three of three are known, so a fourth name has nothing left to be, and
 	// the whole record is answered without anyone being asked.
-	draw(t, src, &Spec{Sort: []SortLevel{{Field: ".name"}},
+	draw(t, src, &DataSetDescriptor{Sort: []SortLevel{{Field: ".name"}},
 		Fields: Record{{Name: ".mode"}}}, &Scope{Count: 4})
 	if n.reads != was {
 		t.Error("a name the totals had settled was asked about")
@@ -328,7 +328,7 @@ func TestAnExcludingQueryIsAnsweredAndNarrowed(t *testing.T) {
 	draw(t, src, byName(), &Scope{Count: 4}) // whole records, so entire
 	was := n.reads
 
-	out, _ := draw(t, src, &Spec{Sort: []SortLevel{{Field: ".name"}},
+	out, _ := draw(t, src, &DataSetDescriptor{Sort: []SortLevel{{Field: ".name"}},
 		Exclude: Record{{Name: ".size"}}}, &Scope{Count: 4})
 	if n.reads != was {
 		t.Error("an excluding query over records known entire asked the source")
@@ -509,7 +509,7 @@ func TestAnAnswerWithAnUnidentifiedRecordIsNotFiled(t *testing.T) {
 	c := ownCache(t, 1<<20, 1<<20)
 	src := NewCachedSource(&nameless{})
 
-	out, done := draw(t, src, &Spec{}, &Scope{Count: 9})
+	out, done := draw(t, src, &DataSetDescriptor{}, &Scope{Count: 9})
 	if len(out.keys) != 3 || done.Stop != StopExhausted {
 		t.Fatalf("the asker got %d records / %s", len(out.keys), done.Stop)
 	}
@@ -523,7 +523,7 @@ func TestAnAnswerWithAnUnidentifiedRecordIsNotFiled(t *testing.T) {
 // an otherwise ordinary answer.
 type nameless struct{}
 
-func (nameless) Open(*Spec) (DataSet, error) { return namelessSet{}, nil }
+func (nameless) Open(*DataSetDescriptor) (DataSet, error) { return namelessSet{}, nil }
 
 type namelessSet struct{}
 
@@ -542,15 +542,15 @@ func (namelessSet) Read(sc *Scope, out Sink) error {
 
 // setKeyOf and placedText reach into the wrapper the way a test may and nothing
 // else should: by asking what it would have keyed things under.
-func setKeyOf(src *CachedSource, spec *Spec) dataSet {
-	return dataSet{source: src.key, set: src.key + "\x00" + dataSetKey(spec)}
+func setKeyOf(src *CachedSource, descriptor *DataSetDescriptor) dataSet {
+	return dataSet{source: src.key, set: src.key + "\x00" + dataSetKey(descriptor)}
 }
 
-func placedText(c *cache, src *CachedSource, spec *Spec, key string) bool {
+func placedText(c *cache, src *CachedSource, descriptor *DataSetDescriptor, key string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for k, e := range c.at {
-		if strings.HasPrefix(k, setKeyOf(src, spec).set) && valueText(e.id) == key {
+		if strings.HasPrefix(k, setKeyOf(src, descriptor).set) && valueText(e.id) == key {
 			return true
 		}
 	}
@@ -565,7 +565,7 @@ func TestOpeningIsRefusedByTheSourceAndNotByTheCache(t *testing.T) {
 	ownCache(t, 1<<20, 1<<20)
 	src, n := cached(t, twoWays)
 
-	bad := &Spec{Sort: []SortLevel{{Field: ".name", Level: Level{Collation: "klingon"}}}}
+	bad := &DataSetDescriptor{Sort: []SortLevel{{Field: ".name", Level: Level{Collation: "klingon"}}}}
 	if v, err := src.Open(bad); err == nil {
 		v.Close()
 		t.Fatal("a collation nothing carries was opened")
@@ -597,7 +597,7 @@ func TestWhatIsFiledIsNotTheSourcesOwnSlice(t *testing.T) {
 	shared := Record{Named(".name", "first")}
 	src := NewCachedSource(&reusing{bag: shared})
 
-	draw(t, src, &Spec{}, &Scope{Count: 2})
+	draw(t, src, &DataSetDescriptor{}, &Scope{Count: 2})
 	shared[0] = Named("name", "rewritten")
 
 	for _, want := range []string{"first", "second"} {
@@ -617,7 +617,7 @@ func TestWhatIsFiledIsNotTheSourcesOwnSlice(t *testing.T) {
 // which is what a source reading a file into one buffer does.
 type reusing struct{ bag Record }
 
-func (r *reusing) Open(*Spec) (DataSet, error) { return &reusingSet{src: r}, nil }
+func (r *reusing) Open(*DataSetDescriptor) (DataSet, error) { return &reusingSet{src: r}, nil }
 
 type reusingSet struct{ src *reusing }
 
@@ -689,11 +689,11 @@ func TestAValueOnlyMissAsksAboutTheRecordsAndNotTheStretch(t *testing.T) {
 // that cannot answer "these particular records" looks like.
 type picky struct{ child Source }
 
-func (p *picky) Open(spec *Spec) (DataSet, error) {
-	if spec.Filter != nil && spec.Filter.Op == OpID {
+func (p *picky) Open(descriptor *DataSetDescriptor) (DataSet, error) {
+	if descriptor.Filter != nil && descriptor.Filter.Op == OpID {
 		return nil, fmt.Errorf("i do not answer questions about identities")
 	}
-	return p.child.Open(spec)
+	return p.child.Open(descriptor)
 }
 
 // The narrow question is an optimisation, so a source that will not answer one
@@ -742,9 +742,9 @@ func (p *placer) Placed(c Complete) {
 
 func (p *placer) placed() string { return strings.Join(p.put, ",") }
 
-func drawPlacing(t *testing.T, src Source, spec *Spec, sc *Scope) *placer {
+func drawPlacing(t *testing.T, src Source, descriptor *DataSetDescriptor, sc *Scope) *placer {
 	t.Helper()
-	v, err := src.Open(spec)
+	v, err := src.Open(descriptor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -827,7 +827,7 @@ func TestAPlaceCarriesWhatIsKnownRatherThanWhatWasAsked(t *testing.T) {
 	})
 
 	// A query that names only `.size` still gets `.name` on the place.
-	sized := &Spec{Sort: []SortLevel{{Field: ".name"}}, Fields: Record{{Name: ".size"}}}
+	sized := &DataSetDescriptor{Sort: []SortLevel{{Field: ".name"}}, Fields: Record{{Name: ".size"}}}
 	out := drawPlacing(t, src, sized, &Scope{Count: 3})
 
 	if got := out.placed(); got != "1" {
@@ -851,24 +851,24 @@ type stingy struct {
 	holds int64
 }
 
-func (p *stingy) Open(spec *Spec) (DataSet, error) {
-	v, err := p.child.Open(spec)
+func (p *stingy) Open(descriptor *DataSetDescriptor) (DataSet, error) {
+	v, err := p.child.Open(descriptor)
 	if err != nil {
 		return nil, err
 	}
-	return &stingySet{src: p, spec: spec, child: v}, nil
+	return &stingySet{src: p, descriptor: descriptor, child: v}, nil
 }
 
 type stingySet struct {
-	src   *stingy
-	spec  *Spec
-	child DataSet
+	src        *stingy
+	descriptor *DataSetDescriptor
+	child      DataSet
 }
 
 func (s *stingySet) Close() { s.child.Close() }
 
 func (s *stingySet) Read(sc *Scope, out Sink) error {
-	if s.spec.Filter == nil || s.spec.Filter.Op != OpID {
+	if s.descriptor.Filter == nil || s.descriptor.Filter.Op != OpID {
 		return s.child.Read(sc, out)
 	}
 	return s.child.Read(sc, &stingySink{src: s.src, out: out})
@@ -928,7 +928,7 @@ func TestAPlaceLeavesOutWhatTheQueryExcluded(t *testing.T) {
 	c.learnValues(src.key, []*cachedRecord{newRecord("", NewInt(1),
 		Record{Named(".name", "f001"), Named(".size", 1)}, Totals{Named: 3}, 0)})
 
-	out := drawPlacing(t, src, &Spec{
+	out := drawPlacing(t, src, &DataSetDescriptor{
 		Sort:    []SortLevel{{Field: ".name"}},
 		Fields:  Record{{Name: ".modified"}},
 		Exclude: Record{{Name: ".name"}},

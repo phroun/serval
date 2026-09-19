@@ -2,7 +2,7 @@ package serval
 
 // What a node's children are.
 //
-// A **node type** is a source and a way of deriving a Spec from the parent
+// A **node type** is a source and a way of deriving a DataSetDescriptor from the parent
 // record. Most of them are one predicate:
 //
 //	its parent by key      eq parent <the parent's key>                 an adjacency list
@@ -14,7 +14,7 @@ package serval
 // which is the shallow and the deep distinction expressed in the criterion
 // rather than added beside it.
 //
-// **It is a Go function from a record to a Spec, not a small language.** Two or
+// **It is a Go function from a record to a DataSetDescriptor, not a small language.** Two or
 // three constructors cover the shapes above. A language for saying this belongs
 // with bundles authoring trees, which is a real thing to want later and a parser
 // to write when something needs it rather than now.
@@ -128,8 +128,8 @@ func Always(kinds ...string) []Branch {
 // agree is a place to put them together. A criterion that cannot be censused
 // leaves them out, and every node is then counted on its own.
 type Criterion struct {
-	// Of is the question for one node: a Spec naming that node's children.
-	Of func(of Node) *Spec
+	// Of is the question for one node: a DataSetDescriptor naming that node's children.
+	Of func(of Node) *DataSetDescriptor
 
 	// Over and By are how a whole level is counted in one question: the
 	// sequence every one of these children is drawn from, and the field saying
@@ -140,7 +140,7 @@ type Criterion struct {
 	// row in exactly one group, so a criterion that puts a row in several
 	// nodes' answers -- a subtree, where every ancestor claims it -- cannot use
 	// one, and says so by leaving these out rather than by counting wrongly.
-	Over  *Spec
+	Over  *DataSetDescriptor
 	By    string
 	Group func(of Node) *Value
 }
@@ -176,12 +176,12 @@ func (c Criterion) Check() error {
 // parent -- so a census of the source by that field answers every node at once.
 func ChildrenByKey(field string) Criterion {
 	return Criterion{
-		Of: func(of Node) *Spec {
-			return &Spec{Filter: &Filter{
+		Of: func(of Node) *DataSetDescriptor {
+			return &DataSetDescriptor{Filter: &Filter{
 				Op: OpEq, Field: field, Values: []*Value{of.Key},
 			}}
 		},
-		Over:  &Spec{},
+		Over:  &DataSetDescriptor{},
 		By:    field,
 		Group: func(of Node) *Value { return of.Key },
 	}
@@ -203,12 +203,12 @@ func ChildrenByKey(field string) Criterion {
 // node's twisty.
 func (st Standing) ChildrenByLocation(field string) Criterion {
 	return Criterion{
-		Of: func(of Node) *Spec {
-			return &Spec{Filter: &Filter{
+		Of: func(of Node) *DataSetDescriptor {
+			return &DataSetDescriptor{Filter: &Filter{
 				Op: OpEq, Field: field, Values: []*Value{NewText(of.Path)},
 			}}
 		},
-		Over:  &Spec{},
+		Over:  &DataSetDescriptor{},
 		By:    field,
 		Group: func(of Node) *Value { return NewText(of.Path) },
 	}
@@ -238,8 +238,8 @@ func (st Standing) ChildrenByLocation(field string) Criterion {
 // is no field whose values are these answers, and this one leaves the census
 // parts out rather than counting something that is not what was asked.
 func (st Standing) DescendantsByLocation(field string) Criterion {
-	return Criterion{Of: func(of Node) *Spec {
-		return &Spec{Filter: &Filter{Op: OpOr, Children: []*Filter{
+	return Criterion{Of: func(of Node) *DataSetDescriptor {
+		return &DataSetDescriptor{Filter: &Filter{Op: OpOr, Children: []*Filter{
 			{Op: OpEq, Field: field, Values: []*Value{NewText(of.Path)}},
 			{Op: OpStarts, Field: field, Values: []*Value{NewText(st.Under(of.Path))}},
 		}}}
@@ -249,7 +249,7 @@ func (st Standing) DescendantsByLocation(field string) Criterion {
 // Sorted puts a sort on whatever a criterion produces.
 //
 // **A node type may order its children differently from its parents, and this
-// costs nothing** -- a node type produces a whole Spec, and a Spec is a source,
+// costs nothing** -- a node type produces a whole DataSetDescriptor, and a DataSetDescriptor is a source,
 // a filter and a sort. Windows in z-order under applications in name order needs
 // nothing added. It is written down because a capability nobody notices gets
 // reinvented.
@@ -257,12 +257,12 @@ func (st Standing) DescendantsByLocation(field string) Criterion {
 // not to the order: sorting the same records cannot make there be more or fewer.
 func Sorted(by Criterion, levels ...SortLevel) Criterion {
 	inner := by.Of
-	by.Of = func(of Node) *Spec {
-		spec := inner(of)
-		if spec == nil {
+	by.Of = func(of Node) *DataSetDescriptor {
+		descriptor := inner(of)
+		if descriptor == nil {
 			return nil
 		}
-		out := *spec
+		out := *descriptor
 		out.Sort = levels
 		return &out
 	}

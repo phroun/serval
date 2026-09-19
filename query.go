@@ -3,7 +3,7 @@ package serval
 // What is asked, and what comes back.
 //
 // A query names a sequence once and then reads stretches of it. The naming is a
-// Spec -- a source, a filter and a sort -- and it is stated when the query is
+// DataSetDescriptor -- a source, a filter and a sort -- and it is stated when the query is
 // made and never again: a different filter or a different sort is a different
 // sequence, which is a different query opened alongside this one. The reading
 // is a Scope, and there is one per question asked.
@@ -114,13 +114,13 @@ func Levels(levels []SortLevel) []Level {
 	return out
 }
 
-// A Spec says what sequence a query names: which records, in which order.
+// A DataSetDescriptor says what sequence a query names: which records, in which order.
 //
 // Fields and Exclude are what the asker WANTS. What a source carries back may
 // be any superset of that -- sending more than was asked for is always
 // allowed -- but what it CLAIMS to carry must be true, because an answer kept
 // against a later question is answered from what it claims.
-type Spec struct {
+type DataSetDescriptor struct {
 	Source  string
 	Fields  Record // the fields asked for; empty means whatever the record has
 	Exclude Record // the fields not wanted, valued the same way
@@ -132,7 +132,7 @@ type Spec struct {
 // walk, how many, and where the asker's own knowledge picks up again.
 //
 // It is not a filter and it names no field. The sequence is already decided by
-// the spec, and a scope only says which part of it to read -- so a source
+// the descriptor, and a scope only says which part of it to read -- so a source
 // prepares one ordering and serves every scope of it cheaply, rather than
 // preparing a new one because the reader scrolled.
 //

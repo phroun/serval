@@ -111,18 +111,18 @@ func NewCachedSource(child Source) *CachedSource {
 // where a source REFUSES a sequence it cannot produce exactly, and a refusal
 // that only arrived once the cache happened to miss would be a refusal that
 // depended on what was in memory.
-func (c *CachedSource) Open(spec *Spec) (DataSet, error) {
-	if spec == nil {
-		spec = &Spec{}
+func (c *CachedSource) Open(descriptor *DataSetDescriptor) (DataSet, error) {
+	if descriptor == nil {
+		descriptor = &DataSetDescriptor{}
 	}
-	child, err := c.child.Open(spec)
+	child, err := c.child.Open(descriptor)
 	if err != nil {
 		return nil, err
 	}
 	return &cachedSet{
-		src:   c,
-		spec:  spec,
-		child: child,
+		src:        c,
+		descriptor: descriptor,
+		child:      child,
 		ds: dataSet{
 			// The records are the wrapper's, and every sequence over them is a
 			// sequence of the wrapper's: two sorts of one source share what
@@ -130,18 +130,18 @@ func (c *CachedSource) Open(spec *Spec) (DataSet, error) {
 			// and share how many of them there are, which the filter decides
 			// and the sort cannot.
 			source:  c.key,
-			set:     c.key + "\x00" + dataSetKey(spec),
-			members: c.key + "\x00" + FilterKey(spec.Filter),
+			set:     c.key + "\x00" + dataSetKey(descriptor),
+			members: c.key + "\x00" + FilterKey(descriptor.Filter),
 		},
-		want: spec.Fields,
+		want: descriptor.Fields,
 	}, nil
 }
 
 type cachedSet struct {
-	src   *CachedSource
-	spec  *Spec
-	child DataSet
-	ds    dataSet
+	src        *CachedSource
+	descriptor *DataSetDescriptor
+	child      DataSet
+	ds         dataSet
 
 	// want is what a held record has to carry for this sequence's questions to
 	// be answered out of it. Empty is the whole record.
@@ -227,11 +227,11 @@ func (s *cachedSet) replay(got *serving, out Sink, places Placing) error {
 		}
 		fields := r.fields
 		entire := r.entire()
-		if entire && len(s.spec.Exclude) > 0 {
+		if entire && len(s.descriptor.Exclude) > 0 {
 			// What this query does not want comes off here rather than being
 			// held twice: the cache keeps the record, and each sequence over it
 			// takes what it asked for.
-			fields = without(fields, s.spec.Exclude)
+			fields = without(fields, s.descriptor.Exclude)
 			entire = false
 		}
 		var err error
@@ -262,10 +262,10 @@ func (s *cachedSet) known(r *cachedRecord) Record {
 	if r == nil {
 		return nil
 	}
-	if len(s.spec.Exclude) == 0 {
+	if len(s.descriptor.Exclude) == 0 {
 		return r.fields
 	}
-	return without(r.fields, s.spec.Exclude)
+	return without(r.fields, s.descriptor.Exclude)
 }
 
 // topUp asks the child about exactly the records whose values fell short.
@@ -290,11 +290,11 @@ func (s *cachedSet) topUp(short []*Value) {
 		// rather than stopping anything, and no test kills it.
 		return
 	}
-	v, err := s.src.child.Open(&Spec{
-		Sort:    s.spec.Sort,
+	v, err := s.src.child.Open(&DataSetDescriptor{
+		Sort:    s.descriptor.Sort,
 		Filter:  &Filter{Op: OpID, Values: short},
-		Fields:  s.spec.Fields,
-		Exclude: s.spec.Exclude,
+		Fields:  s.descriptor.Fields,
+		Exclude: s.descriptor.Exclude,
 	})
 	if err != nil {
 		return // it will not answer questions in that shape

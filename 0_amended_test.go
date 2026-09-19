@@ -90,7 +90,7 @@ func TestAReplacementFilteredOutIsARecordGone(t *testing.T) {
 	a := amendable(t)
 	a.Replace(key(1), fields("build.sh", 99999)) // the filter below wants under 3000
 
-	out, _ := read(t, a, &Spec{Sort: []SortLevel{{Field: ".size"}}, Filter: and(lt(".size", 3000))}, &Scope{Count: 2})
+	out, _ := read(t, a, &DataSetDescriptor{Sort: []SortLevel{{Field: ".size"}}, Filter: and(lt(".size", 3000))}, &Scope{Count: 2})
 	if out.joined() != "2,0" {
 		t.Errorf("the sequence is %s", out.joined())
 	}
@@ -102,7 +102,7 @@ func TestARecordTheChildNeverSendsStillGoesOut(t *testing.T) {
 	a := amendable(t)
 	a.Replace(key(3), fields("parser.go", 100)) // was 14022, the filter excludes it
 
-	out, _ := read(t, a, &Spec{Sort: []SortLevel{{Field: ".size"}}, Filter: and(lt(".size", 3000))}, &Scope{Count: 4})
+	out, _ := read(t, a, &DataSetDescriptor{Sort: []SortLevel{{Field: ".size"}}, Filter: and(lt(".size", 3000))}, &Scope{Count: 4})
 	if out.joined() != "2,3,1,0" {
 		t.Errorf("the sequence is %s", out.joined())
 	}
@@ -115,7 +115,7 @@ func TestARecordTheChildNeverSendsStillGoesOut(t *testing.T) {
 // against what is held when it is asked.
 func TestAmendmentsChangeBetweenScopes(t *testing.T) {
 	a := amendable(t)
-	set, err := a.Open(&Spec{Sort: []SortLevel{{Field: ".size"}}})
+	set, err := a.Open(&DataSetDescriptor{Sort: []SortLevel{{Field: ".size"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,8 +213,8 @@ func TestItClaimsOrderOnlyWhenTheChildDid(t *testing.T) {
 // which every application is free to do.
 type jumbled struct{ inner Source }
 
-func (j *jumbled) Open(spec *Spec) (DataSet, error) {
-	set, err := j.inner.Open(spec)
+func (j *jumbled) Open(descriptor *DataSetDescriptor) (DataSet, error) {
+	set, err := j.inner.Open(descriptor)
 	if err != nil {
 		return nil, err
 	}
@@ -245,7 +245,7 @@ func (errBroken) Error() string { return "the records are broken" }
 // records have become unreachable does.
 type brokenSource struct{}
 
-func (brokenSource) Open(*Spec) (DataSet, error) { return brokenSet{}, nil }
+func (brokenSource) Open(*DataSetDescriptor) (DataSet, error) { return brokenSet{}, nil }
 
 type brokenSet struct{}
 
@@ -261,7 +261,7 @@ func (brokenSet) Read(_ *Scope, out Sink) error {
 // asked waiting.
 func TestAChildThatRefusesEndsTheScope(t *testing.T) {
 	a := NewAmendedSource(brokenSource{})
-	set, err := a.Open(&Spec{})
+	set, err := a.Open(&DataSetDescriptor{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,8 +348,8 @@ func TestAChildThatNeverCatchesUpIsNotAskedForever(t *testing.T) {
 // a source that will never fill a scope however often it is asked.
 type dribble struct{ rounds int }
 
-func (d *dribble) Open(*Spec) (DataSet, error) { return d, nil }
-func (d *dribble) Close()                      {}
+func (d *dribble) Open(*DataSetDescriptor) (DataSet, error) { return d, nil }
+func (d *dribble) Close()                                   {}
 
 func (d *dribble) Read(f *Scope, out Sink) error {
 	d.rounds++
@@ -628,7 +628,7 @@ func TestAnAdditionTheFilterDropsIsNotSlack(t *testing.T) {
 	a := NewAmendedSource(s)
 	a.Add(key(90), fields("added", 99999)) // outside the filter below
 
-	read(t, a, &Spec{Sort: []SortLevel{{Field: ".size"}}, Filter: and(lt(".size", 1000))}, &Scope{Count: 2})
+	read(t, a, &DataSetDescriptor{Sort: []SortLevel{{Field: ".size"}}, Filter: and(lt(".size", 1000))}, &Scope{Count: 2})
 	if s.asked.Count != 2 {
 		t.Errorf("the child was asked for %d, want the 2 the scope wanted", s.asked.Count)
 	}
@@ -644,9 +644,9 @@ func TestTheAmendmentsAreArrangedOncePerSequence(t *testing.T) {
 	seq := opened(t, a, bySize())
 
 	seq.scope(&Scope{Count: 2})
-	built := a.order(&Spec{Sort: []SortLevel{{Field: ".size"}}})
+	built := a.order(&DataSetDescriptor{Sort: []SortLevel{{Field: ".size"}}})
 	seq.scope(&Scope{Count: 2})
-	again := a.order(&Spec{Sort: []SortLevel{{Field: ".size"}}})
+	again := a.order(&DataSetDescriptor{Sort: []SortLevel{{Field: ".size"}}})
 
 	if built != again {
 		t.Error("a second scope of one sequence arranged the amendments again")
@@ -723,13 +723,13 @@ func TestALearnedPlacementRearrangesWhatIsHeld(t *testing.T) {
 	a.Delete(key(0), nil) // README.md, 2048, placement unknown
 	seq := opened(t, a, bySize())
 
-	before := a.order(&Spec{Sort: []SortLevel{{Field: ".size"}}})
+	before := a.order(&DataSetDescriptor{Sort: []SortLevel{{Field: ".size"}}})
 	if before.unplaced != 1 {
 		t.Fatalf("a deletion with no placement was counted %d times", before.unplaced)
 	}
 	seq.scope(&Scope{Count: 9}) // the child sends it, and the round teaches where it sat
 
-	after := a.order(&Spec{Sort: []SortLevel{{Field: ".size"}}})
+	after := a.order(&DataSetDescriptor{Sort: []SortLevel{{Field: ".size"}}})
 	if after.unplaced != 0 {
 		t.Errorf("the placement was learned and it is still counted for every scope")
 	}
@@ -885,8 +885,8 @@ func TestBothRunsOfTheArrangementAreInOrder(t *testing.T) {
 		a.Delete(key(int64(80+i)), fields("gone", size))
 	}
 
-	o := a.order(&Spec{Sort: []SortLevel{{Field: ".size"}}})
-	levels := ordering1(&Spec{Sort: []SortLevel{{Field: ".size"}}})
+	o := a.order(&DataSetDescriptor{Sort: []SortLevel{{Field: ".size"}}})
+	levels := ordering1(&DataSetDescriptor{Sort: []SortLevel{{Field: ".size"}}})
 	for _, run := range []struct {
 		what string
 		at   [][]*Value
@@ -906,8 +906,8 @@ func TestBothRunsOfTheArrangementAreInOrder(t *testing.T) {
 
 // small is the sequence of records under a kilobyte, which twoWays has two of:
 // go.mod at 96 and build.sh at 310.
-func small() *Spec {
-	return &Spec{Sort: []SortLevel{{Field: ".size"}}, Filter: lt(".size", 1000)}
+func small() *DataSetDescriptor {
+	return &DataSetDescriptor{Sort: []SortLevel{{Field: ".size"}}, Filter: lt(".size", 1000)}
 }
 
 // An amendment is worth -1, 0 or +1, and which of those it is turns on one
@@ -1248,7 +1248,7 @@ func TestWhatIsHeldCanBeReadBack(t *testing.T) {
 // boundary answers a question nobody asked.
 type oversending struct{ n int }
 
-func (o *oversending) Open(*Spec) (DataSet, error) { return &oversendingSet{n: o.n}, nil }
+func (o *oversending) Open(*DataSetDescriptor) (DataSet, error) { return &oversendingSet{n: o.n}, nil }
 
 type oversendingSet struct{ n int }
 
@@ -1281,7 +1281,7 @@ func (s *oversendingSet) Close() {}
 // only makes an answer bigger.
 func TestATrimmedScopeIsFilledAndNotExhausted(t *testing.T) {
 	a := NewAmendedSource(&oversending{n: 4})
-	set, err := a.Open(&Spec{})
+	set, err := a.Open(&DataSetDescriptor{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1326,7 +1326,7 @@ func TestATrimmedScopeIsFilledAndNotExhausted(t *testing.T) {
 // past the end and the next question is saved.
 func TestAnUntrimmedScopeKeepsTheChildsExhausted(t *testing.T) {
 	a := NewAmendedSource(&oversending{n: 3})
-	set, err := a.Open(&Spec{})
+	set, err := a.Open(&DataSetDescriptor{})
 	if err != nil {
 		t.Fatal(err)
 	}

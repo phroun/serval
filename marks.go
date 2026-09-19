@@ -106,7 +106,7 @@ type marker struct {
 // Marks is a tree's expansion: which nodes are open, held sparsely.
 //
 // It lives on the SOURCE rather than on a data set, so two data sets over one
-// spec cannot disagree about what the sequence contains. Two views sharing a
+// descriptor cannot disagree about what the sequence contains. Two views sharing a
 // tree share its expansion, which is sometimes exactly right; a view wanting its
 // own wraps its own tree, which is cheap because wrapping is all it is.
 //

@@ -6,7 +6,8 @@
 >
 > `ordering.md` is the comparison and membership rules a source computes its
 > sequence by, and the README is the model in brief. Nothing here says how any
-> of it is written down: a `Spec` arrives as a `Spec`, and how one is spelled on
+> of it is written down: a descriptor arrives as a `DataSetDescriptor`, and how
+> one is spelled on
 > a wire or in a file is the business of whatever brought it in.
 
 Records are sometimes here and sometimes somewhere that has to be asked. It is
@@ -15,7 +16,7 @@ is one interface with a body of static data behind it or something across a
 connection that will answer in its own time.
 
 ```go
-type Source interface{ Open(spec *Spec) (DataSet, error) }
+type Source interface{ Open(descriptor *DataSetDescriptor) (DataSet, error) }
 
 type DataSet interface {
     Read(s *Scope, out Sink) error
@@ -62,11 +63,11 @@ and merges what it holds of its own into the answer, and a composed source asks
 all of its children and interleaves theirs. Any of them can stand in front of
 any kind, including each other.
 
-**A format is a LOADER, not a source.** `ListSource` is the engine every body of
-records in memory runs on — the filter, the ordering built once per spec, the
-scope walked out of it, the exact count — and what a format does is turn its own
-text into rows for it. So the formats differ in what they read and in nothing
-after that:
+**A format is a LOADER, not a source.** `ListSource` is the engine every body
+of records in memory runs on — the filter, the ordering built once per
+descriptor, the scope walked out of it, the exact count — and what a format
+does is turn its own text into rows for it. So the formats differ in what they
+read and in nothing after that:
 
 | | |
 |---|---|
@@ -316,7 +317,8 @@ what reaching the first one costs.
 The sort tuples are kept beside the rows rather than recomputed, because
 extracting a field is a map lookup and a conversion, and a sort that did it per
 comparison would read the data `n log n` times instead of once. Orderings are
-cached on the spec that names them, so two data sets over one sequence share
+cached on the descriptor that names them, so two data sets over one sequence
+share
 the work and going back to a column somebody clicked before is free.
 
 A scope emits every record in `(After..Until]` and then carries on past `Until`
@@ -331,7 +333,7 @@ iterations (`0_psl_bench_test.go`):
 | | |
 |---|---|
 | reading the file | **2.5 s** — `pawscript.ParsePSL`, once |
-| stating the sequence | **58 ms** — one filter pass and one sort, once per spec |
+| stating the sequence | **58 ms** — one filter pass and one sort, once per descriptor |
 | a scope of 30 at the start | **14.0 µs** |
 | a scope of 30 at the end | **21.8 µs** |
 

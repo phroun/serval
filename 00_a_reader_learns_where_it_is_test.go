@@ -55,7 +55,7 @@ func placeRead(t *testing.T, set DataSet, s *Scope) *took {
 
 func placeSet(t *testing.T, src Source) DataSet {
 	t.Helper()
-	set, err := src.Open(&Spec{})
+	set, err := src.Open(&DataSetDescriptor{})
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -264,7 +264,7 @@ func TestASourceThatCannotSeekSaysWhereItActuallyStarted(t *testing.T) {
 	}
 	// SORTED, so the includes interleave by value and no arithmetic turns a
 	// position in the whole into a position in each part.
-	set, err := left.Open(&Spec{Sort: []SortLevel{{Field: "n"}}})
+	set, err := left.Open(&DataSetDescriptor{Sort: []SortLevel{{Field: "n"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +291,7 @@ func TestTheLoopStopsAgainstASourceThatCannotSeek(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	set, err := c.Open(&Spec{Sort: []SortLevel{{Field: "n"}}})
+	set, err := c.Open(&DataSetDescriptor{Sort: []SortLevel{{Field: "n"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,7 +328,7 @@ func TestAnAmendedSourceSaysWhereItActuallyStarted(t *testing.T) {
 	// An ADDITION, which moves every position after it, so a position cannot be
 	// handed down and this source starts where it would have started anyway.
 	a.Add(NewText("zzz"), Record{Named("n", "mine")})
-	set, err := a.Open(&Spec{})
+	set, err := a.Open(&DataSetDescriptor{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -361,7 +361,7 @@ func TestAWrapperDoesNotClaimAPlaceItDoesNotKnow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	set, err := c.Open(&Spec{})
+	set, err := c.Open(&DataSetDescriptor{})
 	if err != nil {
 		t.Fatal(err)
 	}

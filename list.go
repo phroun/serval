@@ -13,7 +13,7 @@ package serval
 // answer those is a source, and the formats differ only in how they answer.
 //
 // It is read-only and its records do not move, so everything computed from them
-// stays true: an ordering is built once per spec and reused for every scope
+// stays true: an ordering is built once per descriptor and reused for every scope
 // drawn from it.
 
 import (
@@ -107,14 +107,14 @@ func (l *ListSource) Restate(rows []Row) {
 }
 
 // Open states a sequence over the records: one filter, one sort.
-func (l *ListSource) Open(spec *Spec) (DataSet, error) {
-	if spec == nil {
-		spec = &Spec{}
+func (l *ListSource) Open(descriptor *DataSetDescriptor) (DataSet, error) {
+	if descriptor == nil {
+		descriptor = &DataSetDescriptor{}
 	}
-	if err := supported(spec.Sort); err != nil {
+	if err := supported(descriptor.Sort); err != nil {
 		return nil, err
 	}
-	return &listDataSet{src: l, spec: spec, ord: l.order(spec)}, nil
+	return &listDataSet{src: l, descriptor: descriptor, ord: l.order(descriptor)}, nil
 }
 
 // supported refuses a sort this source cannot produce exactly: a collation it
@@ -175,13 +175,13 @@ func (o *ordering) Less(i, j int) bool {
 	return CompareLevels(o.tuples[i], o.tuples[j], o.levels) < 0
 }
 
-// order is the sequence a spec names, built if it has not been built already.
+// order is the sequence a descriptor names, built if it has not been built already.
 //
 // Two data sets over the same sequence share one, and so does one opened
 // again on an order somebody had before -- which is the same click that
 // produced it the first time.
-func (l *ListSource) order(spec *Spec) *ordering {
-	key := dataSetKey(spec)
+func (l *ListSource) order(descriptor *DataSetDescriptor) *ordering {
+	key := dataSetKey(descriptor)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if o := l.cache[key]; o != nil {
@@ -190,13 +190,13 @@ func (l *ListSource) order(spec *Spec) *ordering {
 
 	// The filter runs first, so a record that is not in the sequence is never
 	// sorted and never has its sort fields read.
-	o := &ordering{over: l.rows, levels: ordering1(spec)}
+	o := &ordering{over: l.rows, levels: ordering1(descriptor)}
 	for i := range l.rows {
-		if !Match(l.rows[i].Key(), l.rows[i], spec.Filter) {
+		if !Match(l.rows[i].Key(), l.rows[i], descriptor.Filter) {
 			continue
 		}
 		o.rows = append(o.rows, i)
-		o.tuples = append(o.tuples, tupleOf(l.rows[i], spec.Sort))
+		o.tuples = append(o.tuples, tupleOf(l.rows[i], descriptor.Sort))
 	}
 	// The record's identity is the last level and no two records share one, so
 	// no two tuples are equal and there is nothing for stability to settle.
@@ -219,8 +219,8 @@ func (l *ListSource) order(spec *Spec) *ordering {
 // ordering1 is what the sequence compares positions by: a level per sort
 // level, and then the record's identity, which settles what the sort leaves
 // equal.
-func ordering1(spec *Spec) []Level {
-	return append(Levels(spec.Sort), Level{})
+func ordering1(descriptor *DataSetDescriptor) []Level {
+	return append(Levels(descriptor.Sort), Level{})
 }
 
 // dataSetKey names a data set: this source, this sort, this filter. Those three
@@ -235,8 +235,8 @@ func ordering1(spec *Spec) []Level {
 //
 // The source itself is not in the string because the table it keys is the
 // source's own.
-func dataSetKey(spec *Spec) string {
-	return SortKey(spec.Sort) + "\x00" + FilterKey(spec.Filter)
+func dataSetKey(descriptor *DataSetDescriptor) string {
+	return SortKey(descriptor.Sort) + "\x00" + FilterKey(descriptor.Filter)
 }
 
 // tupleOf is a record's position: the value at each sort level, and then its
@@ -253,9 +253,9 @@ func tupleOf(r Row, levels []SortLevel) []*Value {
 // --- the data set ------------------------------------------------------
 
 type listDataSet struct {
-	src  *ListSource
-	spec *Spec
-	ord  *ordering
+	src        *ListSource
+	descriptor *DataSetDescriptor
+	ord        *ordering
 }
 
 // Close lets the data set go. The ordering stays in the source's cache until
@@ -409,14 +409,14 @@ func (v *listDataSet) fields(rec Row) (Record, Totals, bool) {
 	bag := rec.Fields()
 	has := Tally(bag)
 
-	want := v.spec.Fields
+	want := v.descriptor.Fields
 	if len(want) == 0 {
 		out := v.without(bag)
 		return out, has, len(out) == len(bag)
 	}
 	out := make(Record, 0, len(want))
 	for _, a := range want {
-		if v.spec.Exclude.Has(a.Name) {
+		if v.descriptor.Exclude.Has(a.Name) {
 			continue
 		}
 		// Present with its value, or present with nothing under it, which says
@@ -428,12 +428,12 @@ func (v *listDataSet) fields(rec Row) (Record, Totals, bool) {
 
 // without drops the fields the query said it did not want.
 func (v *listDataSet) without(bag Record) Record {
-	if len(v.spec.Exclude) == 0 {
+	if len(v.descriptor.Exclude) == 0 {
 		return bag
 	}
 	out := make(Record, 0, len(bag))
 	for _, a := range bag {
-		if !v.spec.Exclude.Has(a.Name) {
+		if !v.descriptor.Exclude.Has(a.Name) {
 			out = append(out, a)
 		}
 	}

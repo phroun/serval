@@ -169,8 +169,8 @@ func newPlacebook() *placebook {
 // of is the notes for one sequence, made if this is the first scope of it.
 // Each sequence gets `n` of them, because a source may have more than one thing
 // to remember about the same record.
-func (b *placebook) of(spec *Spec, n int, slots ...string) []*places {
-	key := dataSetKey(spec)
+func (b *placebook) of(descriptor *DataSetDescriptor, n int, slots ...string) []*places {
+	key := dataSetKey(descriptor)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if held := b.books[key]; held != nil {

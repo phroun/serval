@@ -15,7 +15,7 @@ questions asked one at a time.
 The want that produced it is a tree drawing a page of twisties. Thirty visible
 rows, each needing to know whether it has children and how many: thirty counts,
 which over a source that must be asked is thirty questions for thirty numbers. A
-census of the child spec's filter by the parent field is one question that
+census of the child descriptor's filter by the parent field is one question that
 answers all thirty, and answers them exactly.
 
 ## It is `RecordCount`, partitioned
@@ -25,7 +25,8 @@ being bolted on.
 
 A count already belongs to the **filter** and not to the order — sorting the same
 records cannot make there be more or fewer, which is why the cache keys a count
-by `source` and `FilterKey(spec.Filter)` with the sort left out entirely. A census
+by `source` and `FilterKey(descriptor.Filter)` with the sort left out entirely.
+A census
 is that same claim, partitioned by one field's value. So it keys by the same two
 things and the field name, and **the sort is ignored**: a census over the by-name
 and the by-size orders of one filter is one answer and one cache entry, exactly

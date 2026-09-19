@@ -106,9 +106,9 @@ func TestACompositionSaysNothingAboutShape(t *testing.T) {
 // field name is not a shape, so even a composition may hand this on.
 func TestAWrapperGoesOnSayingATreesFieldNames(t *testing.T) {
 	tree, err := NewTreeSource(TreeOptions{
-		Source: shaped(),
-		Spec:   &Spec{Filter: &Filter{Op: OpEq, Field: "up", Values: []*Value{nil}}},
-		Types:  NodeTypes{Default: &NodeType{Children: ChildrenByKey("up")}},
+		Source:     shaped(),
+		Descriptor: &DataSetDescriptor{Filter: &Filter{Op: OpEq, Field: "up", Values: []*Value{nil}}},
+		Types:      NodeTypes{Default: &NodeType{Children: ChildrenByKey("up")}},
 		Fields: TreeFields{Depth: "tree:depth", Path: "tree:path",
 			Expandable: "tree:kids", State: "tree:state", Kind: "tree:kind"},
 	})
@@ -142,10 +142,10 @@ func TestAWrapperGoesOnSayingATreesFieldNames(t *testing.T) {
 	// Two trees under DIFFERENT names have no one answer, and nothing is what that
 	// gets -- rather than one of them offered for rows that are not its.
 	other, err := NewTreeSource(TreeOptions{
-		Source: shaped(),
-		Spec:   &Spec{Filter: &Filter{Op: OpEq, Field: "up", Values: []*Value{nil}}},
-		Types:  NodeTypes{Default: &NodeType{Children: ChildrenByKey("up")}},
-		Fields: TreeFields{Depth: "deep"},
+		Source:     shaped(),
+		Descriptor: &DataSetDescriptor{Filter: &Filter{Op: OpEq, Field: "up", Values: []*Value{nil}}},
+		Types:      NodeTypes{Default: &NodeType{Children: ChildrenByKey("up")}},
+		Fields:     TreeFields{Depth: "deep"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -174,7 +174,7 @@ func countable() *ListSource {
 // censusOver is what a source says when its sequence is partitioned by a field.
 func censusOver(t *testing.T, src Source, field string) (Census, error) {
 	t.Helper()
-	set, err := src.Open(&Spec{})
+	set, err := src.Open(&DataSetDescriptor{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,8 +338,8 @@ func TestAWrapperOverRecordsInHandDoesNotArrive(t *testing.T) {
 // connection does.
 type arriver struct{ tells []func() }
 
-func (a *arriver) Open(*Spec) (DataSet, error) { return &arriverSet{}, nil }
-func (a *arriver) WhenArrived(tell func())     { a.tells = append(a.tells, tell) }
+func (a *arriver) Open(*DataSetDescriptor) (DataSet, error) { return &arriverSet{}, nil }
+func (a *arriver) WhenArrived(tell func())                  { a.tells = append(a.tells, tell) }
 
 type arriverSet struct{}
 

@@ -8,8 +8,8 @@ import (
 )
 
 // told is one notice answered against one sequence, as a source would send it.
-func told(c *cache, ds dataSet, spec *Spec, n Notice) {
-	c.stale(ds, spec.Roles(), n)
+func told(c *cache, ds dataSet, descriptor *DataSetDescriptor, n Notice) {
+	c.stale(ds, descriptor.Roles(), n)
 }
 
 // The two shapes an extent takes: one record, and a stretch between two.
@@ -145,7 +145,7 @@ func TestAnAlteredFieldCostsTheOrderOnlyWhereItDecidesIt(t *testing.T) {
 	filed(c, byName, nil, wad(1, 5))
 	filed(c, bySize, nil, wad(1, 5))
 
-	told(c, bySize, &Spec{Sort: []SortLevel{{Field: ".size"}}},
+	told(c, bySize, &DataSetDescriptor{Sort: []SortLevel{{Field: ".size"}}},
 		Notice{Extent: atRecord(3), Change: Altered, Fields: []string{".size"}})
 
 	if got := order(c, bySize); got != "" {
@@ -522,7 +522,7 @@ func TestAnAdditionNamesNoRecord(t *testing.T) {
 
 // --- the wrapper ----------------------------------------------------------
 
-// A notice with no spec is about RECORDS and not about anyone's order, which is
+// A notice with no descriptor is about RECORDS and not about anyone's order, which is
 // what a record known to the source but placed in no live sequence needs: there
 // is no stretch to name it in.
 func TestANoticeWithNoSequenceCostsTheValuesOnly(t *testing.T) {

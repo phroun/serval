@@ -7,9 +7,9 @@ import "testing"
 
 // counted opens a sequence, asks how many records it has, and lets it go --
 // which is what a reader sizing a bar does.
-func counted(t *testing.T, src Source, spec *Spec) string {
+func counted(t *testing.T, src Source, descriptor *DataSetDescriptor) string {
 	t.Helper()
-	v, err := src.Open(spec)
+	v, err := src.Open(descriptor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -19,8 +19,8 @@ func counted(t *testing.T, src Source, spec *Spec) string {
 
 // under is the same sequence with a filter on it, for the cases about
 // membership rather than order.
-func under(f *Filter) *Spec {
-	return &Spec{Sort: []SortLevel{{Field: ".name"}}, Filter: f}
+func under(f *Filter) *DataSetDescriptor {
+	return &DataSetDescriptor{Sort: []SortLevel{{Field: ".name"}}, Filter: f}
 }
 
 // --- the figure itself ----------------------------------------------------
@@ -208,19 +208,19 @@ func TestPartOfASequenceReadIsAFloor(t *testing.T) {
 // --- what a notice costs it -----------------------------------------------
 
 // told about a sequence through the wrapper, which is how a source says it.
-func staled(t *testing.T, src *CachedSource, spec *Spec, n Notice) {
+func staled(t *testing.T, src *CachedSource, descriptor *DataSetDescriptor, n Notice) {
 	t.Helper()
-	src.Stale(spec, n)
+	src.Stale(descriptor, n)
 }
 
 // stated is the figure the cache is HOLDING for a membership, which is what a
 // notice moves. What RecordCount answers can be better than this -- the source
 // is the authority and is free to say so again -- so a case about what a notice
 // costs asks here, and the case below is about the asking.
-func stated(c *cache, src *CachedSource, spec *Spec) string {
+func stated(c *cache, src *CachedSource, descriptor *DataSetDescriptor) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.counts[src.key+"\x00"+FilterKey(spec.Filter)].String()
+	return c.counts[src.key+"\x00"+FilterKey(descriptor.Filter)].String()
 }
 
 func TestANoticeMovesTheCountByWhatItSays(t *testing.T) {
@@ -248,18 +248,18 @@ func TestANoticeMovesTheCountByWhatItSays(t *testing.T) {
 		src, _ := cached(t, many(20))
 		// Sorted by name and filtered on size, so that the two fields ask
 		// different questions -- which is the point of half these cases.
-		spec := &Spec{
+		descriptor := &DataSetDescriptor{
 			Sort:   []SortLevel{{Field: ".name"}},
 			Filter: lt(".size", 100),
 		}
-		if got := counted(t, src, spec); got != "20" {
+		if got := counted(t, src, descriptor); got != "20" {
 			t.Fatalf("%s: it counted %s to begin with", c.what, got)
 		}
-		draw(t, src, spec, &Scope{Count: 8}) // so a stretch has somewhere to be
+		draw(t, src, descriptor, &Scope{Count: 8}) // so a stretch has somewhere to be
 
-		staled(t, src, spec, c.n)
+		staled(t, src, descriptor, c.n)
 
-		if got := stated(held, src, spec); got != c.want {
+		if got := stated(held, src, descriptor); got != c.want {
 			t.Errorf("%s: it holds %s, and should hold %s", c.what, got, c.want)
 		}
 	}
@@ -272,21 +272,21 @@ func TestANoticeMovesTheCountByWhatItSays(t *testing.T) {
 func TestAFigureInDoubtIsAskedAboutAgain(t *testing.T) {
 	ownCache(t, 1<<20, 1<<20)
 	src, n := cached(t, many(20))
-	spec := under(nil)
+	descriptor := under(nil)
 
-	if got := counted(t, src, spec); got != "20" {
+	if got := counted(t, src, descriptor); got != "20" {
 		t.Fatalf("it counted %s", got)
 	}
 	was := n.counted
 
-	src.Stale(spec, Notice{Extent: atRecord(3), Change: Removed})
-	if got := counted(t, src, spec); got != "19" || n.counted != was {
+	src.Stale(descriptor, Notice{Extent: atRecord(3), Change: Removed})
+	if got := counted(t, src, descriptor); got != "19" || n.counted != was {
 		t.Errorf("after a deletion it counted %s, asking %d times over",
 			got, n.counted-was)
 	}
 
-	src.Stale(spec, Notice{Extent: atRecord(4), Change: Replaced})
-	if got := counted(t, src, spec); got != "20" || n.counted != was+1 {
+	src.Stale(descriptor, Notice{Extent: atRecord(4), Change: Replaced})
+	if got := counted(t, src, descriptor); got != "20" || n.counted != was+1 {
 		t.Errorf("after a doubtful notice it counted %s, asking %d times over",
 			got, n.counted-was)
 	}
@@ -314,7 +314,7 @@ func TestANoticeWithNoSequenceMovesNoCount(t *testing.T) {
 func TestANoticeAgainstOneSortMovesTheCountForBoth(t *testing.T) {
 	ownCache(t, 1<<20, 1<<20)
 	src, _ := cached(t, many(20))
-	byName, bySize := under(nil), &Spec{Sort: []SortLevel{{Field: ".size"}}}
+	byName, bySize := under(nil), &DataSetDescriptor{Sort: []SortLevel{{Field: ".size"}}}
 
 	if got := counted(t, src, byName); got != "20" {
 		t.Fatalf("it counted %s", got)
@@ -337,8 +337,8 @@ type saying struct {
 
 func mute(child Source) *saying { return &saying{child: child} }
 
-func (m *saying) Open(spec *Spec) (DataSet, error) {
-	v, err := m.child.Open(spec)
+func (m *saying) Open(descriptor *DataSetDescriptor) (DataSet, error) {
+	v, err := m.child.Open(descriptor)
 	if err != nil {
 		return nil, err
 	}
@@ -418,8 +418,8 @@ type telling struct {
 	total RecordCount
 }
 
-func (m *telling) Open(spec *Spec) (DataSet, error) {
-	v, err := m.child.Open(spec)
+func (m *telling) Open(descriptor *DataSetDescriptor) (DataSet, error) {
+	v, err := m.child.Open(descriptor)
 	if err != nil {
 		return nil, err
 	}

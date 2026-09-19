@@ -213,8 +213,8 @@ func TestRecordsTheBoundaryAlreadyCoveredAreDropped(t *testing.T) {
 // asked from, which is the least an implementation can do and is legal.
 type ignoresBoundaries struct{ inner Source }
 
-func (e *ignoresBoundaries) Open(spec *Spec) (DataSet, error) {
-	set, err := e.inner.Open(spec)
+func (e *ignoresBoundaries) Open(descriptor *DataSetDescriptor) (DataSet, error) {
+	set, err := e.inner.Open(descriptor)
 	if err != nil {
 		return nil, err
 	}
@@ -330,12 +330,12 @@ func TestAScopeThatFilledIsNotTheEndOfTheSequence(t *testing.T) {
 // which every application is free to do.
 type short struct{ inner Source }
 
-func (s *short) Open(spec *Spec) (DataSet, error) {
-	set, err := s.inner.Open(spec)
+func (s *short) Open(descriptor *DataSetDescriptor) (DataSet, error) {
+	set, err := s.inner.Open(descriptor)
 	if err != nil {
 		return nil, err
 	}
-	return &shortSet{inner: set, sort: spec.Sort}, nil
+	return &shortSet{inner: set, sort: descriptor.Sort}, nil
 }
 
 type shortSet struct {
@@ -392,7 +392,7 @@ func TestAnIncludeThatRefusesEndsTheScope(t *testing.T) {
 		Include{Name: "good", Source: mustPSL(t, leftDoc)},
 		Include{Name: "bad", Source: brokenSource{}})
 
-	set, err := c.Open(&Spec{})
+	set, err := c.Open(&DataSetDescriptor{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -493,7 +493,7 @@ func TestAnIDFilterReachesOneInclude(t *testing.T) {
 		Include{Name: "left", Source: left},
 		Include{Name: "right", Source: right})
 
-	out, _ := read(t, c, &Spec{Filter: and(anyOf("left/1"))}, &Scope{Count: 10})
+	out, _ := read(t, c, &DataSetDescriptor{Filter: and(anyOf("left/1"))}, &Scope{Count: 10})
 	if out.joined() != "left/1" {
 		t.Errorf("the sequence is %s", out.joined())
 	}
@@ -507,7 +507,7 @@ func TestAnIDFilterReachesOneInclude(t *testing.T) {
 	// the include knows its records by. Which of a number, a name and a string
 	// that is is the include's own business, so it is asked about every
 	// spelling of the text there could be.
-	if got := left.spec.Filter.String(); got != `{ id "1" 1 }` {
+	if got := left.descriptor.Filter.String(); got != `{ id "1" 1 }` {
 		t.Errorf("the include was asked %s", got)
 	}
 }
@@ -519,11 +519,11 @@ func TestAnIDFilterReachesARecordKeyedByName(t *testing.T) {
 	left := &spy{inner: mustPSL(t, leftDoc)}
 	c := composed(t, Include{Name: "left", Source: left})
 
-	out, _ := read(t, c, &Spec{Filter: and(anyOf("left/note"))}, &Scope{Count: 10})
+	out, _ := read(t, c, &DataSetDescriptor{Filter: and(anyOf("left/note"))}, &Scope{Count: 10})
 	if out.joined() != "left/note" {
 		t.Errorf("the sequence is %s", out.joined())
 	}
-	if got := left.spec.Filter.String(); got != `{ id "note" note }` {
+	if got := left.descriptor.Filter.String(); got != `{ id "note" note }` {
 		t.Errorf("the include was asked %s", got)
 	}
 }
@@ -537,7 +537,7 @@ func TestAnIDSetReachesEveryIncludeItNames(t *testing.T) {
 		Include{Name: "right", Source: right},
 		Include{Name: "other", Source: other})
 
-	out, _ := read(t, c, &Spec{Filter: and(anyOf("left/1", "right/0"))}, &Scope{Count: 10})
+	out, _ := read(t, c, &DataSetDescriptor{Filter: and(anyOf("left/1", "right/0"))}, &Scope{Count: 10})
 	if out.joined() != "left/1,right/0" {
 		t.Errorf("the sequence is %s", out.joined())
 	}
@@ -557,7 +557,7 @@ func TestAnIDFilterThatNamesNoIncludeIsEmpty(t *testing.T) {
 		Include{Name: "left", Source: left},
 		Include{Name: "right", Source: right})
 
-	out, done := read(t, c, &Spec{Filter: and(anyOf("nobody/1"))}, &Scope{Count: 10})
+	out, done := read(t, c, &DataSetDescriptor{Filter: and(anyOf("nobody/1"))}, &Scope{Count: 10})
 	if len(out.keys) != 0 {
 		t.Errorf("records came back for a name no include has: %v", out.keys)
 	}
@@ -578,12 +578,12 @@ func TestAFilterOnIdentityAndAFieldKeepsBoth(t *testing.T) {
 		Include{Name: "right", Source: mustPSL(t, rightDoc)})
 
 	out, _ := read(t, c,
-		&Spec{Filter: and(lt(".size", 100), anyOf("left/0", "left/note"))}, &Scope{Count: 10})
+		&DataSetDescriptor{Filter: and(lt(".size", 100), anyOf("left/0", "left/note"))}, &Scope{Count: 10})
 	if out.joined() != "left/0,left/note" {
 		t.Errorf("the sequence is %s", out.joined())
 	}
 	// The field predicate went down; the identity became the include's own.
-	if got := left.spec.Filter.String(); got != `{ lt .size 100; id "0" 0 "note" note }` {
+	if got := left.descriptor.Filter.String(); got != `{ lt .size 100; id "0" 0 "note" note }` {
 		t.Errorf("the include was asked %s", got)
 	}
 }
@@ -597,11 +597,11 @@ func TestKeyIsAnOrdinaryFieldName(t *testing.T) {
 
 	// Under Whole a PSL source exposes its own key under that name, so this
 	// asks each include about ITS key, not about the identity this source made.
-	out, _ := read(t, c, &Spec{Filter: and(eqf("key", 1))}, &Scope{Count: 10})
+	out, _ := read(t, c, &DataSetDescriptor{Filter: and(eqf("key", 1))}, &Scope{Count: 10})
 	if out.joined() != "left/1" {
 		t.Errorf("the sequence is %s", out.joined())
 	}
-	if got := left.spec.Filter.String(); got != `{ eq key 1 }` {
+	if got := left.descriptor.Filter.String(); got != `{ eq key 1 }` {
 		t.Errorf("the include was asked %s", got)
 	}
 }
@@ -629,7 +629,7 @@ func TestAskingEveryIncludeDoesNotWait(t *testing.T) {
 		Include{Name: "here", Source: mustPSL(t, leftDoc)},
 		Include{Name: "app", Source: listing()})
 
-	set, err := c.Open(&Spec{})
+	set, err := c.Open(&DataSetDescriptor{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -658,7 +658,7 @@ func TestOnlyWhatIsOutOfStepIsHeld(t *testing.T) {
 		Include{Name: "fast", Source: mustPSL(t, leftDoc)},
 		Include{Name: "slow", Source: slow})
 
-	set, err := c.Open(&Spec{Sort: []SortLevel{{Field: ".size"}}})
+	set, err := c.Open(&DataSetDescriptor{Sort: []SortLevel{{Field: ".size"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -689,8 +689,8 @@ type withheld struct {
 	held  []func()
 }
 
-func (w *withheld) Open(spec *Spec) (DataSet, error) {
-	set, err := w.inner.Open(spec)
+func (w *withheld) Open(descriptor *DataSetDescriptor) (DataSet, error) {
+	set, err := w.inner.Open(descriptor)
 	if err != nil {
 		return nil, err
 	}
@@ -743,19 +743,19 @@ func TestEveryIncludeIsAskedForTheWholeShortfall(t *testing.T) {
 
 // spy is a source that keeps the request it was given.
 type spy struct {
-	inner  Source
-	asked  *Scope
-	reads  int // how many times a scope was put to it
-	spec   *Spec
-	opened bool
+	inner      Source
+	asked      *Scope
+	reads      int // how many times a scope was put to it
+	descriptor *DataSetDescriptor
+	opened     bool
 }
 
-func (s *spy) Open(spec *Spec) (DataSet, error) {
-	set, err := s.inner.Open(spec)
+func (s *spy) Open(descriptor *DataSetDescriptor) (DataSet, error) {
+	set, err := s.inner.Open(descriptor)
 	if err != nil {
 		return nil, err
 	}
-	s.opened, s.spec = true, spec
+	s.opened, s.descriptor = true, descriptor
 	return &spySet{src: s, inner: set}, nil
 }
 
@@ -810,12 +810,12 @@ func TestAPredicateOnAnotherFieldIsNotAnsweredHere(t *testing.T) {
 	c := composed(t, Include{Name: "left", Source: left})
 
 	out, _ := read(t, c,
-		&Spec{Filter: and(not(&Filter{Op: OpGt, Field: ".size", Values: []*Value{NewInt(100)}}), anyOf("left/1"))}, &Scope{Count: 10})
+		&DataSetDescriptor{Filter: and(not(&Filter{Op: OpGt, Field: ".size", Values: []*Value{NewInt(100)}}), anyOf("left/1"))}, &Scope{Count: 10})
 	if out.joined() != "left/1" {
 		t.Errorf("the sequence is %s", out.joined())
 	}
 	// The negation went down whole, because it names no key.
-	if got := left.spec.Filter.String(); got != `{ not { gt .size 100 }; id "1" 1 }` {
+	if got := left.descriptor.Filter.String(); got != `{ not { gt .size 100 }; id "1" 1 }` {
 		t.Errorf("the include was asked %s", got)
 	}
 }
@@ -824,7 +824,7 @@ func TestAPredicateOnAnotherFieldIsNotAnsweredHere(t *testing.T) {
 // branches still pick which.
 func TestADisjunctionOnIdentityKeepsEveryBranchsIncludes(t *testing.T) {
 	out, _ := read(t, twoIncludes(t),
-		&Spec{Filter: and(&Filter{Op: OpOr, Children: []*Filter{anyOf("left/1"), anyOf("right/0")}})}, &Scope{Count: 10})
+		&DataSetDescriptor{Filter: and(&Filter{Op: OpOr, Children: []*Filter{anyOf("left/1"), anyOf("right/0")}})}, &Scope{Count: 10})
 	if out.joined() != "left/1,right/0" {
 		t.Errorf("the sequence is %s", out.joined())
 	}
@@ -835,15 +835,15 @@ func TestANegationOnIdentityTakesThatRecordOut(t *testing.T) {
 	left := &spy{inner: mustPSL(t, leftDoc)}
 	c := composed(t, Include{Name: "left", Source: left})
 
-	out, _ := read(t, c, &Spec{Filter: and(not(anyOf("left/1")))}, &Scope{Count: 10})
+	out, _ := read(t, c, &DataSetDescriptor{Filter: and(not(anyOf("left/1")))}, &Scope{Count: 10})
 	if out.joined() != "left/0,left/note" {
 		t.Errorf("the sequence is %s", out.joined())
 	}
 	// A negation of something that became a different question cannot be
 	// handed down -- negating a widened filter narrows it -- so the include was
 	// asked nothing and this source settled it.
-	if left.spec.Filter != nil {
-		t.Errorf("the include was asked %s", left.spec.Filter.String())
+	if left.descriptor.Filter != nil {
+		t.Errorf("the include was asked %s", left.descriptor.Filter.String())
 	}
 }
 
@@ -855,12 +855,12 @@ func TestADisjunctionBranchThatAdmitsEverythingAsksNothing(t *testing.T) {
 	c := composed(t, Include{Name: "left", Source: left})
 
 	out, _ := read(t, c,
-		&Spec{Filter: and(&Filter{Op: OpOr, Children: []*Filter{not(anyOf("nobody/0")), eqf(".size", 999)}})}, &Scope{Count: 10})
+		&DataSetDescriptor{Filter: and(&Filter{Op: OpOr, Children: []*Filter{not(anyOf("nobody/0")), eqf(".size", 999)}})}, &Scope{Count: 10})
 	if out.joined() != "left/0,left/1,left/note" {
 		t.Errorf("the sequence is %s", out.joined())
 	}
-	if left.spec.Filter != nil {
-		t.Errorf("the include was asked %s", left.spec.Filter.String())
+	if left.descriptor.Filter != nil {
+		t.Errorf("the include was asked %s", left.descriptor.Filter.String())
 	}
 }
 
@@ -873,17 +873,17 @@ func TestADisjunctionBranchThatAdmitsEverythingAsksNothing(t *testing.T) {
 // include is opened.
 func TestWhichIncludesAreWorthAsking(t *testing.T) {
 	for _, c := range []struct {
-		filter *Spec
+		filter *DataSetDescriptor
 		open   []bool // left, right
 	}{
-		{&Spec{Filter: and(anyOf("left/1", "left/note"))}, []bool{true, false}},
-		{&Spec{Filter: and(anyOf("right/0"))}, []bool{false, true}},
-		{&Spec{Filter: and(anyOf("left/1", "right/0"))}, []bool{true, true}},
-		{&Spec{Filter: and(anyOf("nobody/1"))}, []bool{false, false}},
+		{&DataSetDescriptor{Filter: and(anyOf("left/1", "left/note"))}, []bool{true, false}},
+		{&DataSetDescriptor{Filter: and(anyOf("right/0"))}, []bool{false, true}},
+		{&DataSetDescriptor{Filter: and(anyOf("left/1", "right/0"))}, []bool{true, true}},
+		{&DataSetDescriptor{Filter: and(anyOf("nobody/1"))}, []bool{false, false}},
 		// A field called `key` says nothing about which include holds what.
-		{&Spec{Filter: and(eqf("key", 1))}, []bool{true, true}},
-		{&Spec{Filter: and(&Filter{Op: OpStarts, Field: "key", Values: []*Value{NewText("left/")}})}, []bool{true, true}},
-		{&Spec{Filter: and(&Filter{Op: OpHas, Field: "key"})}, []bool{true, true}},
+		{&DataSetDescriptor{Filter: and(eqf("key", 1))}, []bool{true, true}},
+		{&DataSetDescriptor{Filter: and(&Filter{Op: OpStarts, Field: "key", Values: []*Value{NewText("left/")}})}, []bool{true, true}},
+		{&DataSetDescriptor{Filter: and(&Filter{Op: OpHas, Field: "key"})}, []bool{true, true}},
 	} {
 		left, right := &spy{inner: mustPSL(t, leftDoc)}, &spy{inner: mustPSL(t, rightDoc)}
 		set := composed(t,
@@ -910,7 +910,7 @@ func TestAnIDFilterReachesThroughNesting(t *testing.T) {
 		Include{Name: "flat", Source: flat},
 		Include{Name: "nested", Source: inner})
 
-	out, _ := read(t, c, &Spec{Filter: and(anyOf("nested/deep/1"))}, &Scope{Count: 10})
+	out, _ := read(t, c, &DataSetDescriptor{Filter: and(anyOf("nested/deep/1"))}, &Scope{Count: 10})
 	if out.joined() != "nested/deep/1" {
 		t.Errorf("the sequence is %s", out.joined())
 	}
@@ -919,7 +919,7 @@ func TestAnIDFilterReachesThroughNesting(t *testing.T) {
 	}
 	// One name came off at each level, and what reached the bottom is the
 	// identity that source knows the record by.
-	if got := deep.spec.Filter.String(); got != `{ id "1" 1 }` {
+	if got := deep.descriptor.Filter.String(); got != `{ id "1" 1 }` {
 		t.Errorf("the innermost source was asked %s", got)
 	}
 }
@@ -963,7 +963,7 @@ func TestAComposedSourceReversesUnderASort(t *testing.T) {
 	// The direction goes down with the scope, not with the sequence: an
 	// include prepares one ordering and is asked to walk it backwards.
 	for _, s := range []*spy{left, right} {
-		if got := SortKey(s.spec.Sort); got != SortKey(bySize().Sort) {
+		if got := SortKey(s.descriptor.Sort); got != SortKey(bySize().Sort) {
 			t.Errorf("an include was asked for a different order: %q", got)
 		}
 		if !s.asked.Reversed {
@@ -986,12 +986,12 @@ func TestAnIncludeIsAskedForTheFieldsTheSortNeeds(t *testing.T) {
 		Include{Name: "left", Source: left},
 		Include{Name: "right", Source: right})
 
-	out, _ := read(t, c, &Spec{Sort: []SortLevel{{Field: ".size"}}, Fields: Record{{Name: ".name"}}}, &Scope{Count: 10})
+	out, _ := read(t, c, &DataSetDescriptor{Sort: []SortLevel{{Field: ".size"}}, Fields: Record{{Name: ".name"}}}, &Scope{Count: 10})
 	if out.joined() != "left/note,left/0,right/0,left/1,right/1" {
 		t.Errorf("the sequence is %s", out.joined())
 	}
 	for _, s := range []*spy{left, right} {
-		if got := s.spec.Fields.String(); got != "{ .name; .size }" {
+		if got := s.descriptor.Fields.String(); got != "{ .name; .size }" {
 			t.Errorf("an include was asked for %s", got)
 		}
 	}
@@ -1094,7 +1094,7 @@ func TestAnIncludeThatWillNotCountLeavesAFloor(t *testing.T) {
 // --- being told a record may have moved -----------------------------------
 
 // noted reports whether this source still has a note of where a record stood.
-func noted(c *ComposedSource, spec *Spec, key string) bool {
+func noted(c *ComposedSource, descriptor *DataSetDescriptor, key string) bool {
 	for _, held := range c.notes.all() {
 		if _, ok := held.places[0].get(NewSymbol(key)); ok {
 			return true

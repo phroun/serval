@@ -173,13 +173,13 @@ func (h TreeHint) Options(src Source) (TreeOptions, error) {
 		children = Sorted(children, SortLevel{Field: h.Order})
 	}
 
-	spec := &Spec{Filter: h.top()}
+	descriptor := &DataSetDescriptor{Filter: h.top()}
 	if h.Order != "" {
-		spec.Sort = []SortLevel{{Field: h.Order}}
+		descriptor.Sort = []SortLevel{{Field: h.Order}}
 	}
 	return TreeOptions{
 		Source:       src,
-		Spec:         spec,
+		Descriptor:   descriptor,
 		SaysChildren: h.Children,
 		Types: NodeTypes{Default: &NodeType{
 			Children: children,

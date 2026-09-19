@@ -17,7 +17,7 @@ func composedPair(t *testing.T, each int) (*ComposedSource, DataSet) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	set, err := c.Open(&Spec{})
+	set, err := c.Open(&DataSetDescriptor{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestBeingToldAnythingChangedDropsEveryRank(t *testing.T) {
 // everything after it.
 func TestAnAmendedSourceRanksAndForgets(t *testing.T) {
 	a := NewAmendedSource(numbered(100))
-	set, err := a.Open(&Spec{})
+	set, err := a.Open(&DataSetDescriptor{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestEveryAmendmentDropsTheRanks(t *testing.T) {
 	} {
 		a := NewAmendedSource(numbered(100))
 		a.Replace(NewInt(7), Record{Named("n", "first")}) // so Stale has something to clear
-		set, err := a.Open(&Spec{})
+		set, err := a.Open(&DataSetDescriptor{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -271,7 +271,7 @@ func TestWalkingBackFromTheFirstRecordGoesNowhere(t *testing.T) {
 // is worth having.
 func TestAPositionGoesDownToAnUnamendedChild(t *testing.T) {
 	a := NewAmendedSource(numbered(500))
-	set, err := a.Open(&Spec{})
+	set, err := a.Open(&DataSetDescriptor{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +305,7 @@ func TestAnythingHeldStopsAPositionGoingDown(t *testing.T) {
 	} {
 		a := NewAmendedSource(numbered(500))
 		c.do(a)
-		set, err := a.Open(&Spec{})
+		set, err := a.Open(&DataSetDescriptor{})
 		if err != nil {
 			t.Fatal(err)
 		}

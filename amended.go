@@ -448,30 +448,30 @@ func (a *AmendedSource) lookup(key *Value) *amendment {
 }
 
 // Open states a sequence, and opens the same one on the child.
-func (a *AmendedSource) Open(spec *Spec) (DataSet, error) {
-	if spec == nil {
-		spec = &Spec{}
+func (a *AmendedSource) Open(descriptor *DataSetDescriptor) (DataSet, error) {
+	if descriptor == nil {
+		descriptor = &DataSetDescriptor{}
 	}
-	child, err := a.child.Open(spec)
+	child, err := a.child.Open(descriptor)
 	if err != nil {
 		return nil, err
 	}
-	notes := a.notes.of(spec, 2)
+	notes := a.notes.of(descriptor, 2)
 	return &amendedSet{
-		src:    a,
-		spec:   spec,
-		child:  child,
-		levels: ordering1(spec),
-		placed: notes[0],
-		resume: notes[1],
+		src:        a,
+		descriptor: descriptor,
+		child:      child,
+		levels:     ordering1(descriptor),
+		placed:     notes[0],
+		resume:     notes[1],
 	}, nil
 }
 
 type amendedSet struct {
-	src    *AmendedSource
-	spec   *Spec
-	child  DataSet
-	levels []Level
+	src        *AmendedSource
+	descriptor *DataSetDescriptor
+	child      DataSet
+	levels     []Level
 
 	// placed is where each record this sequence has handed out stood. The
 	// child places `after` for its own records, but this source has to place it
@@ -517,7 +517,7 @@ func (s *amendedSet) Close() { s.child.Close() }
 // child's copy crosses, in the figure and in the records alike.
 func (s *amendedSet) RecordCount() RecordCount {
 	n := CountOf(s.child)
-	f := s.spec.Filter
+	f := s.descriptor.Filter
 
 	s.src.mu.Lock()
 	defer s.src.mu.Unlock()
@@ -697,7 +697,7 @@ func (m *merge) full() bool { return m.sent >= m.want.Count }
 // -- a deletion, and a replacement whose new values no longer match, losing the
 // child's record just as surely if the child still holds the old ones.
 func (m *merge) prepare() {
-	o := m.set.src.order(m.set.spec)
+	o := m.set.src.order(m.set.descriptor)
 	m.order = o
 
 	// The order is arranged the way the sequence runs, and a scope reading it
@@ -820,7 +820,7 @@ func (m *merge) theirs(key *Value, fields Record, has Totals, whole bool) error 
 			}
 		}
 	}
-	m.flushBefore(recordTuple(key, fields, m.set.spec.Sort))
+	m.flushBefore(recordTuple(key, fields, m.set.descriptor.Sort))
 	if m.full() {
 		// **A record of the child's, dropped for being past the count.** Written
 		// down because it decides what this scope is complete UP TO: the child may
@@ -965,7 +965,7 @@ func (m *merge) emit(key *Value, fields Record, has Totals, whole bool) error {
 	// it stood, so this source can place its own records against it, and where
 	// the child stood, so the child can be resumed without being shown an
 	// identity that is not its.
-	m.set.placed.put(key, recordTuple(key, fields, m.set.spec.Sort))
+	m.set.placed.put(key, recordTuple(key, fields, m.set.descriptor.Sort))
 	m.set.resume.put(key, []*Value{m.childAt})
 	if at, ok := rankAt(m.begin, m.want.Reversed, m.sent-1); ok {
 		m.set.placed.putRank(key, at)

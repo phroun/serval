@@ -27,9 +27,9 @@ func people() *ListSource {
 	})
 }
 
-func censusOn(t *testing.T, src Source, spec *Spec, field string) Census {
+func censusOn(t *testing.T, src Source, descriptor *DataSetDescriptor, field string) Census {
 	t.Helper()
-	set, err := src.Open(spec)
+	set, err := src.Open(descriptor)
 	if err != nil {
 		t.Fatalf("opening: %v", err)
 	}
@@ -64,7 +64,7 @@ func census1(c Census) string {
 // The whole of it, over records that are here: exact counts, an exact group
 // total, and the records with no `parent` gathered under undefined.
 func TestACensusCountsEachValueExactly(t *testing.T) {
-	c := censusOn(t, people(), &Spec{}, "parent")
+	c := censusOn(t, people(), &DataSetDescriptor{}, "parent")
 	if got, want := census1(c), "undefined=1 10=3 20=1 (3 groups)"; got != want {
 		t.Errorf("the census reads\n  %s\nwant\n  %s", got, want)
 	}
@@ -72,10 +72,10 @@ func TestACensusCountsEachValueExactly(t *testing.T) {
 
 // **A census belongs to the FILTER**, so the filter decides what is counted.
 func TestACensusCountsTheFilteredSequence(t *testing.T) {
-	spec := &Spec{Filter: &Filter{
+	descriptor := &DataSetDescriptor{Filter: &Filter{
 		Op: OpEq, Field: "kind", Values: []*Value{NewText("file")},
 	}}
-	c := censusOn(t, people(), spec, "parent")
+	c := censusOn(t, people(), descriptor, "parent")
 	if got, want := census1(c), "10=2 20=1 (2 groups)"; got != want {
 		t.Errorf("filtered to files the census reads\n  %s\nwant\n  %s", got, want)
 	}
@@ -85,9 +85,9 @@ func TestACensusCountsTheFilteredSequence(t *testing.T) {
 // the same records cannot make there be more or fewer of them. Two orders of one
 // filter are one census.
 func TestASortDoesNotChangeACensus(t *testing.T) {
-	one := censusOn(t, people(), &Spec{}, "parent")
+	one := censusOn(t, people(), &DataSetDescriptor{}, "parent")
 	src := people()
-	other := censusOn(t, src, &Spec{Sort: []SortLevel{
+	other := censusOn(t, src, &DataSetDescriptor{Sort: []SortLevel{
 		{Field: "kind", Level: Level{Descending: true}},
 	}}, "parent")
 	if census1(one) != census1(other) {
@@ -109,7 +109,7 @@ func TestGroupsAreToldApartByIdentityAndNotBySpelling(t *testing.T) {
 		row(4, NewSymbol("3")),
 		row(5, NewInt(3)),
 	})
-	c := censusOn(t, src, &Spec{}, "at")
+	c := censusOn(t, src, &DataSetDescriptor{}, "at")
 	if c.Total.N != 4 {
 		t.Fatalf("it made %d groups of four different values: %s", c.Total.N, census1(c))
 	}
@@ -127,7 +127,7 @@ func TestGroupsAreToldApartByIdentityAndNotBySpelling(t *testing.T) {
 // being nothing left for it to be -- and is Unknown where it is not. That
 // difference is the whole reason the group total is a claim of its own.
 func TestAValueNobodyHoldsIsNoughtOrUnknown(t *testing.T) {
-	c := censusOn(t, people(), &Spec{}, "parent")
+	c := censusOn(t, people(), &DataSetDescriptor{}, "parent")
 	if got := c.CountOfGroup(NewInt(99)); got != Exactly(0) {
 		t.Errorf("a complete census says %v of a value nobody holds, want exactly none", got)
 	}
@@ -149,7 +149,7 @@ func TestAValueNobodyHoldsIsNoughtOrUnknown(t *testing.T) {
 // whose key is undefined must not fall through to the "nobody holds it" answer
 // when one record does.
 func TestUndefinedIsAskedAboutLikeAnyOtherValue(t *testing.T) {
-	c := censusOn(t, people(), &Spec{}, "parent")
+	c := censusOn(t, people(), &DataSetDescriptor{}, "parent")
 	if got := c.CountOfGroup(nil); got != Exactly(1) {
 		t.Errorf("undefined counts %v, want the one row with no parent", got)
 	}
@@ -164,7 +164,7 @@ func TestTheGroupsComeBackInOneOrder(t *testing.T) {
 		NewRow(NewInt(3), Record{Named("at", 30)}),
 		NewRow(NewInt(4), Record{Named("at", 20)}),
 	})
-	if got, want := census1(censusOn(t, src, &Spec{}, "at")),
+	if got, want := census1(censusOn(t, src, &DataSetDescriptor{}, "at")),
 		"10=1 20=1 30=1 40=1 (4 groups)"; got != want {
 		t.Errorf("the groups read\n  %s\nwant\n  %s", got, want)
 	}
@@ -174,7 +174,7 @@ func TestTheGroupsComeBackInOneOrder(t *testing.T) {
 // sequence to produce one. A census that quietly became a full scan would be
 // fast in testing and ruinous in use.
 func TestADataSetThatCannotSaysSo(t *testing.T) {
-	set, err := plainSet{}.Open(&Spec{})
+	set, err := plainSet{}.Open(&DataSetDescriptor{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,14 +187,14 @@ func TestADataSetThatCannotSaysSo(t *testing.T) {
 // plainSet is the least a source can do: Read and Close and nothing else.
 type plainSet struct{}
 
-func (plainSet) Open(*Spec) (DataSet, error) { return plainSet{}, nil }
-func (plainSet) Read(*Scope, Sink) error     { return nil }
-func (plainSet) Close()                      {}
+func (plainSet) Open(*DataSetDescriptor) (DataSet, error) { return plainSet{}, nil }
+func (plainSet) Read(*Scope, Sink) error                  { return nil }
+func (plainSet) Close()                                   {}
 
 // A closed data set has let its ordering go, so it refuses rather than
 // answering out of nothing -- the same posture RecordCount takes.
 func TestAClosedDataSetRefuses(t *testing.T) {
-	set, err := people().Open(&Spec{})
+	set, err := people().Open(&DataSetDescriptor{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,9 +207,9 @@ func TestAClosedDataSetRefuses(t *testing.T) {
 // **A census is a sequence, so it is a source** -- and then a short list of
 // large counts is a sort and a scope, and needs nothing written for it.
 func TestACensusReadsBackAsRecords(t *testing.T) {
-	c := censusOn(t, people(), &Spec{}, "parent")
+	c := censusOn(t, people(), &DataSetDescriptor{}, "parent")
 
-	set, err := CensusSource(c).Open(&Spec{
+	set, err := CensusSource(c).Open(&DataSetDescriptor{
 		Sort: []SortLevel{{Field: CensusCount, Level: Level{Descending: true}}},
 	})
 	if err != nil {
@@ -257,8 +257,8 @@ func (r *censusRows) Done(Complete)                              {}
 // The undefined group survives being made into a record: its identity is the
 // undefined value, which has a Key like anything else.
 func TestTheUndefinedGroupIsARecordToo(t *testing.T) {
-	c := censusOn(t, people(), &Spec{}, "parent")
-	set, err := CensusSource(c).Open(&Spec{})
+	c := censusOn(t, people(), &DataSetDescriptor{}, "parent")
+	set, err := CensusSource(c).Open(&DataSetDescriptor{})
 	if err != nil {
 		t.Fatal(err)
 	}

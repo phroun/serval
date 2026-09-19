@@ -218,17 +218,17 @@ func TestAStandingThatCannotMeanWhatItSaysIsRefused(t *testing.T) {
 // --- node types --------------------------------------------------------
 
 // **A node type may order its children differently from its parents**, which
-// costs nothing because it produces a whole Spec.
+// costs nothing because it produces a whole DataSetDescriptor.
 func TestAChildTypeMayBringItsOwnSort(t *testing.T) {
 	by := Sorted(ChildrenByKey("parent"),
 		SortLevel{Field: "kind", Level: Level{Descending: true}})
-	spec := by.Of(Node{Key: NewInt(10)})
-	if len(spec.Sort) != 1 || spec.Sort[0].Field != "kind" {
-		t.Fatalf("the sort did not come through: %v", spec.Sort)
+	descriptor := by.Of(Node{Key: NewInt(10)})
+	if len(descriptor.Sort) != 1 || descriptor.Sort[0].Field != "kind" {
+		t.Fatalf("the sort did not come through: %v", descriptor.Sort)
 	}
 	// 1 and 2 are files, 3 is a dir; descending by kind puts the files first,
 	// and the identity settles the rest.
-	if got, want := readKeys(t, people(), spec), "1 2 3"; got != want {
+	if got, want := readKeys(t, people(), descriptor), "1 2 3"; got != want {
 		t.Errorf("sorted children are %q, want %q", got, want)
 	}
 }
@@ -315,9 +315,9 @@ func childrenOf(t *testing.T, src Source, by Criterion, of Node) string {
 	return readKeys(t, src, by.Of(of))
 }
 
-func readKeys(t *testing.T, src Source, spec *Spec) string {
+func readKeys(t *testing.T, src Source, descriptor *DataSetDescriptor) string {
 	t.Helper()
-	set, err := src.Open(spec)
+	set, err := src.Open(descriptor)
 	if err != nil {
 		t.Fatalf("opening: %v", err)
 	}

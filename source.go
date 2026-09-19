@@ -20,7 +20,7 @@ type Source interface {
 	// sequence cannot be produced exactly -- an op that is not implemented, a
 	// collation that is not carried -- because an ordering that is quietly a
 	// little different corrupts every answer after it and looks like data.
-	Open(spec *Spec) (DataSet, error)
+	Open(descriptor *DataSetDescriptor) (DataSet, error)
 }
 
 // A DataSet is one stated sequence -- this source, this sort, this filter --

@@ -43,8 +43,8 @@ func treeOf(t *testing.T, o TreeOptions) *TreeSource {
 	if o.Source == nil {
 		o.Source = kin()
 	}
-	if o.Spec == nil {
-		o.Spec = &Spec{Filter: &Filter{
+	if o.Descriptor == nil {
+		o.Descriptor = &DataSetDescriptor{Filter: &Filter{
 			Op: OpEq, Field: "parent", Values: []*Value{nil},
 		}}
 	}
@@ -222,10 +222,10 @@ func TestATreeReadsBackwards(t *testing.T) {
 }
 
 // **A sort is refused**, because the order is the tree's own. Each LEVEL is
-// sorted by its own spec and the pre-order is laid over that.
+// sorted by its own descriptor and the pre-order is laid over that.
 func TestATreeRefusesASortOfItsOwnSequence(t *testing.T) {
 	src := treeOf(t, TreeOptions{})
-	_, err := src.Open(&Spec{Sort: []SortLevel{{Field: "name"}}})
+	_, err := src.Open(&DataSetDescriptor{Sort: []SortLevel{{Field: "name"}}})
 	if err == nil {
 		t.Fatal("it accepted a sort of the flattened sequence")
 	}
@@ -243,7 +243,7 @@ func TestEachLevelCarriesItsOwnSort(t *testing.T) {
 		t.Error("sorting a criterion cost it its census")
 	}
 	src := treeOf(t, TreeOptions{
-		Spec: &Spec{
+		Descriptor: &DataSetDescriptor{
 			Filter: &Filter{Op: OpEq, Field: "parent", Values: []*Value{nil}},
 			Sort:   down,
 		},
@@ -298,7 +298,7 @@ func TestEveryRowCarriesWhereItStands(t *testing.T) {
 }
 
 // A leaf says nought children, which is a statement and not an ignorance: the
-// child spec was counted and came back empty.
+// child descriptor was counted and came back empty.
 func TestALeafSaysNoughtAndNotNothing(t *testing.T) {
 	src := treeOf(t, TreeOptions{})
 	src.ExpandAll()
@@ -333,7 +333,7 @@ func TestARowMaySayHowManyChildrenItHas(t *testing.T) {
 			NewRow(NewInt(3), Record{Named("name", "says no"), Named("kids", false)}),
 			NewRow(NewInt(4), Record{Named("name", "says nothing")}),
 		}),
-		Spec:         &Spec{},
+		Descriptor:   &DataSetDescriptor{},
 		SaysChildren: "kids",
 	})
 	set, _ := wholeTree(t, src)
@@ -357,8 +357,8 @@ func TestARowMaySayHowManyChildrenItHas(t *testing.T) {
 // carry theirs.
 func TestATreeOverLocationsKeysItsMarksByPath(t *testing.T) {
 	src, err := NewTreeSource(TreeOptions{
-		Source: folders(),
-		Spec:   &Spec{Filter: &Filter{Op: OpEq, Field: "location", Values: []*Value{NewText("/")}}},
+		Source:     folders(),
+		Descriptor: &DataSetDescriptor{Filter: &Filter{Op: OpEq, Field: "location", Values: []*Value{NewText("/")}}},
 		Types: NodeTypes{Default: &NodeType{
 			Children: here.ChildrenByLocation("location"),
 			Standing: here,
@@ -396,8 +396,8 @@ func TestATreeOverLocationsKeysItsMarksByPath(t *testing.T) {
 // unmoved.
 func TestATreeSaysWhetherAKindIsMarkedByItsPath(t *testing.T) {
 	byPath, err := NewTreeSource(TreeOptions{
-		Source: folders(),
-		Spec:   &Spec{Filter: &Filter{Op: OpEq, Field: "location", Values: []*Value{NewText("/")}}},
+		Source:     folders(),
+		Descriptor: &DataSetDescriptor{Filter: &Filter{Op: OpEq, Field: "location", Values: []*Value{NewText("/")}}},
 		Types: NodeTypes{Default: &NodeType{
 			Children: here.ChildrenByLocation("location"),
 			Standing: here,
@@ -413,9 +413,9 @@ func TestATreeSaysWhetherAKindIsMarkedByItsPath(t *testing.T) {
 	// An adjacency list has no standing and no path, so its segment is the key --
 	// which is also what every tree did before a standing existed.
 	byKey, err := NewTreeSource(TreeOptions{
-		Source: people(),
-		Spec:   &Spec{Filter: &Filter{Op: OpEq, Field: "parent", Values: []*Value{nil}}},
-		Types:  NodeTypes{Default: &NodeType{Children: ChildrenByKey("parent")}},
+		Source:     people(),
+		Descriptor: &DataSetDescriptor{Filter: &Filter{Op: OpEq, Field: "parent", Values: []*Value{nil}}},
+		Types:      NodeTypes{Default: &NodeType{Children: ChildrenByKey("parent")}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -449,7 +449,7 @@ func looper() *ListSource {
 // In this fixture `loop` is its own parent, so it appears once at the top level
 // and once beneath itself, and the second one has a dead twisty.
 func TestACycleIsRefusedByDefault(t *testing.T) {
-	src := treeOf(t, TreeOptions{Source: looper(), Spec: &Spec{}})
+	src := treeOf(t, TreeOptions{Source: looper(), Descriptor: &DataSetDescriptor{}})
 	src.ExpandAll()
 	set, got := wholeTree(t, src)
 	defer set.Close()
@@ -468,7 +468,7 @@ func TestARevisitBudgetShowsTheLoopThatManyTimes(t *testing.T) {
 		2: "top/0 loop/0 loop/1 loop/2 loop/3",
 	} {
 		src := treeOf(t, TreeOptions{
-			Source: looper(), Spec: &Spec{}, Revisits: budget,
+			Source: looper(), Descriptor: &DataSetDescriptor{}, Revisits: budget,
 		})
 		src.ExpandAll()
 		set, got := wholeTree(t, src)
@@ -482,7 +482,7 @@ func TestARevisitBudgetShowsTheLoopThatManyTimes(t *testing.T) {
 
 // And the budget is clamped rather than refused, the way a count is.
 func TestARevisitBudgetIsClamped(t *testing.T) {
-	src := treeOf(t, TreeOptions{Source: looper(), Spec: &Spec{}, Revisits: 99})
+	src := treeOf(t, TreeOptions{Source: looper(), Descriptor: &DataSetDescriptor{}, Revisits: 99})
 	src.ExpandAll()
 	set, got := wholeTree(t, src)
 	defer set.Close()
@@ -509,8 +509,8 @@ func TestARowMayNameAChildTypeInAnotherSource(t *testing.T) {
 	})
 
 	src, err := NewTreeSource(TreeOptions{
-		Source: apps,
-		Spec:   &Spec{},
+		Source:     apps,
+		Descriptor: &DataSetDescriptor{},
 		Types: NodeTypes{
 			Field:   "kind",
 			Default: &NodeType{Children: ChildrenByKey("parent")},
@@ -537,7 +537,7 @@ func TestAFilterIsAskedAtEveryLevel(t *testing.T) {
 	src := treeOf(t, TreeOptions{})
 	src.ExpandAll()
 
-	set, err := src.Open(&Spec{Filter: &Filter{
+	set, err := src.Open(&DataSetDescriptor{Filter: &Filter{
 		Op: OpNot, Children: []*Filter{
 			{Op: OpEq, Field: "name", Values: []*Value{NewText("beta")}},
 		},
@@ -587,7 +587,7 @@ func TestTheShallowFilterReachesTheLevelAndNotOnlyTheCount(t *testing.T) {
 	src := treeOf(t, TreeOptions{Source: uncounted{kin()}})
 	src.ExpandAll()
 
-	set, err := src.Open(&Spec{Filter: &Filter{
+	set, err := src.Open(&DataSetDescriptor{Filter: &Filter{
 		Op: OpNot, Children: []*Filter{
 			{Op: OpEq, Field: "name", Values: []*Value{NewText("beta")}},
 		},
@@ -607,7 +607,7 @@ func TestTheShallowFilterReachesTheLevelAndNotOnlyTheCount(t *testing.T) {
 // so with beta filtered out alpha has nought children and says so.
 func TestExpandabilityIsTheFilteredCount(t *testing.T) {
 	src := treeOf(t, TreeOptions{})
-	set, err := src.Open(&Spec{Filter: &Filter{
+	set, err := src.Open(&DataSetDescriptor{Filter: &Filter{
 		Op: OpNot, Children: []*Filter{
 			{Op: OpEq, Field: "name", Values: []*Value{NewText("beta")}},
 		},
@@ -654,7 +654,7 @@ func TestTheTreesOwnFieldsShadowTheRecords(t *testing.T) {
 			Named("path", "somewhere else"),
 		}),
 	})
-	src := treeOf(t, TreeOptions{Source: clash, Spec: &Spec{}})
+	src := treeOf(t, TreeOptions{Source: clash, Descriptor: &DataSetDescriptor{}})
 	set, err := src.Open(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -681,7 +681,7 @@ func TestTheTreesOwnFieldsShadowTheRecords(t *testing.T) {
 	}
 
 	// And moving the tree's name gives the record its own back.
-	moved := treeOf(t, TreeOptions{Source: clash, Spec: &Spec{},
+	moved := treeOf(t, TreeOptions{Source: clash, Descriptor: &DataSetDescriptor{},
 		Fields: TreeFields{Depth: "level"}})
 	set2, err := moved.Open(nil)
 	if err != nil {
@@ -729,9 +729,9 @@ type watched struct {
 	opens *int
 }
 
-func (w watched) Open(spec *Spec) (DataSet, error) {
+func (w watched) Open(descriptor *DataSetDescriptor) (DataSet, error) {
 	*w.opens++
-	return w.Source.Open(spec)
+	return w.Source.Open(descriptor)
 }
 
 // wide is one root with `n` children, all of them leaves -- the shape where a
@@ -754,9 +754,9 @@ func TestOneCensusAnswersEveryTwisty(t *testing.T) {
 	ask := func(n int, by Criterion) int {
 		opens := 0
 		src := treeOf(t, TreeOptions{
-			Source: watched{wide(n), &opens},
-			Spec:   &Spec{Filter: &Filter{Op: OpEq, Field: "parent", Values: []*Value{nil}}},
-			Types:  NodeTypes{Default: &NodeType{Children: by}},
+			Source:     watched{wide(n), &opens},
+			Descriptor: &DataSetDescriptor{Filter: &Filter{Op: OpEq, Field: "parent", Values: []*Value{nil}}},
+			Types:      NodeTypes{Default: &NodeType{Children: by}},
 		})
 		src.ExpandAll()
 		set, got := wholeTree(t, src)
@@ -842,10 +842,10 @@ func TestASubtreeCriterionTakesNoCensus(t *testing.T) {
 	// the guard that decides whether a census is attempted at all, and half of
 	// one would census the wrong thing rather than declining.
 	for _, half := range []Criterion{
-		{Over: &Spec{}},
+		{Over: &DataSetDescriptor{}},
 		{By: "parent"},
 		{Group: func(Node) *Value { return nil }},
-		{Over: &Spec{}, By: "parent"},
+		{Over: &DataSetDescriptor{}, By: "parent"},
 	} {
 		if half.counts() {
 			t.Errorf("a criterion with part of a census claims it can be taken: %+v", half)
@@ -853,9 +853,9 @@ func TestASubtreeCriterionTakesNoCensus(t *testing.T) {
 	}
 	// And it still works, by counting.
 	src, err := NewTreeSource(TreeOptions{
-		Source: folders(),
-		Spec:   &Spec{Filter: &Filter{Op: OpEq, Field: "location", Values: []*Value{NewText("/")}}},
-		Types:  NodeTypes{Default: &NodeType{Children: sub, Standing: here}},
+		Source:     folders(),
+		Descriptor: &DataSetDescriptor{Filter: &Filter{Op: OpEq, Field: "location", Values: []*Value{NewText("/")}}},
+		Types:      NodeTypes{Default: &NodeType{Children: sub, Standing: here}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -882,7 +882,7 @@ func TestASubtreeCriterionTakesNoCensus(t *testing.T) {
 func TestASourceThatWillNotCensusIsAskedOnce(t *testing.T) {
 	opens := 0
 	src := treeOf(t, TreeOptions{Source: watched{uncounted{wide(5)}, &opens},
-		Spec: &Spec{Filter: &Filter{Op: OpEq, Field: "parent", Values: []*Value{nil}}}})
+		Descriptor: &DataSetDescriptor{Filter: &Filter{Op: OpEq, Field: "parent", Values: []*Value{nil}}}})
 	src.ExpandAll()
 	set, got := wholeTree(t, src)
 	defer set.Close()
@@ -920,7 +920,7 @@ func TestHalfACensusIsRefused(t *testing.T) {
 // level itself would not show.
 func TestTheCensusCountsWhatTheLevelWouldShow(t *testing.T) {
 	src := treeOf(t, TreeOptions{})
-	set, err := src.Open(&Spec{Filter: &Filter{
+	set, err := src.Open(&DataSetDescriptor{Filter: &Filter{
 		Op: OpNot, Children: []*Filter{
 			{Op: OpEq, Field: "name", Values: []*Value{NewText("beta")}},
 		},
@@ -961,8 +961,8 @@ func TestAChainOfKindsDeclaresItself(t *testing.T) {
 	})
 
 	src, err := NewTreeSource(TreeOptions{
-		Source: hosts,
-		Spec:   &Spec{},
+		Source:     hosts,
+		Descriptor: &DataSetDescriptor{},
 		Types: NodeTypes{
 			Default: &NodeType{Then: Always("applications")},
 			Named: map[string]*NodeType{
@@ -988,7 +988,7 @@ func TestAChainOfKindsDeclaresItself(t *testing.T) {
 
 	// Not one record anywhere names a kind. That is the claim.
 	for _, s := range []*ListSource{hosts, apps, windows} {
-		set, err := s.Open(&Spec{})
+		set, err := s.Open(&DataSetDescriptor{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1020,8 +1020,8 @@ func TestARowOverridesItsChildrensKind(t *testing.T) {
 	})
 
 	src, err := NewTreeSource(TreeOptions{
-		Source: rows,
-		Spec:   &Spec{Filter: &Filter{Op: OpEq, Field: "parent", Values: []*Value{nil}}},
+		Source:     rows,
+		Descriptor: &DataSetDescriptor{Filter: &Filter{Op: OpEq, Field: "parent", Values: []*Value{nil}}},
 		Types: NodeTypes{
 			Field:   "kind",
 			Default: &NodeType{Children: ChildrenByKey("parent")},
@@ -1117,8 +1117,8 @@ func TestOneParentHasTwoKindsOfChildren(t *testing.T) {
 	})
 
 	src, err := NewTreeSource(TreeOptions{
-		Source: hosts,
-		Spec:   &Spec{},
+		Source:     hosts,
+		Descriptor: &DataSetDescriptor{},
 		Types: NodeTypes{
 			Default: &NodeType{Then: Always("applications", "volumes")},
 			Named: map[string]*NodeType{
@@ -1237,8 +1237,8 @@ func TestABranchAppliesOnlyWhereItsConditionHolds(t *testing.T) {
 	}
 
 	src, err := NewTreeSource(TreeOptions{
-		Source: files,
-		Spec:   &Spec{Sort: []SortLevel{{Field: "name"}}},
+		Source:     files,
+		Descriptor: &DataSetDescriptor{Sort: []SortLevel{{Field: "name"}}},
 		Types: NodeTypes{
 			Default: &NodeType{Then: []Branch{
 				{Kind: "zipEntries", When: endsWith(".zip")},
@@ -1324,8 +1324,8 @@ func TestTwoBranchesOnSeparateFieldsBothApply(t *testing.T) {
 	}
 
 	src, err := NewTreeSource(TreeOptions{
-		Source: things,
-		Spec:   &Spec{Sort: []SortLevel{{Field: "seq"}}},
+		Source:     things,
+		Descriptor: &DataSetDescriptor{Sort: []SortLevel{{Field: "seq"}}},
 		Types: NodeTypes{
 			Default: &NodeType{Then: []Branch{
 				{Kind: "zipEntries", When: isTrue("isZip")},

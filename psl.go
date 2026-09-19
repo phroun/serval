@@ -18,7 +18,7 @@ package serval
 //
 // What it is for is access: a scope of a sorted, filtered sequence, found
 // without walking the records that precede it. The sequence is ordered once per
-// spec, and a scope is a binary search for the boundary and a walk forward as
+// descriptor, and a scope is a binary search for the boundary and a walk forward as
 // far as the scope is long -- so scrolling to the end of a large list costs
 // what scrolling to the start of it costs.
 
@@ -83,7 +83,7 @@ const (
 // A PSLSource is a data source backed by one parsed PSL list.
 //
 // It is read-only and its records do not move, so everything computed from them
-// stays true: an ordering is built once per spec and reused for every scope
+// stays true: an ordering is built once per descriptor and reused for every scope
 // drawn from it.
 // ParsePSLSource reads PSL text and presents it as a data source.
 func ParsePSLSource(text string, reading Reading) (*ListSource, error) {
@@ -320,7 +320,7 @@ func sortedKeys(n *pawscript.PSLNode) []string {
 
 // --- the ordering -------------------------------------------------------
 
-// An ordering is the sequence one spec names: which records are in it, and in
+// An ordering is the sequence one descriptor names: which records are in it, and in
 // what order.
 //
 // The sort tuples are kept beside the rows because they are what the sort and

@@ -83,7 +83,7 @@ func (o *orders) of(key string, gen uint64, build func() *amendOrder) *amendOrde
 
 // order is what this source has to say about a sequence, built if it has been
 // amended since the last time it was asked.
-func (a *AmendedSource) order(spec *Spec) *amendOrder {
+func (a *AmendedSource) order(descriptor *DataSetDescriptor) *amendOrder {
 	a.mu.Lock()
 	gen := a.gen
 	held := make([]*amendment, 0, len(a.amend))
@@ -92,16 +92,16 @@ func (a *AmendedSource) order(spec *Spec) *amendOrder {
 	}
 	a.mu.Unlock()
 
-	return a.orders.of(dataSetKey(spec), gen, func() *amendOrder {
-		return buildAmendOrder(held, spec)
+	return a.orders.of(dataSetKey(descriptor), gen, func() *amendOrder {
+		return buildAmendOrder(held, descriptor)
 	})
 }
 
 // buildAmendOrder does the once-per-sequence work: place each amendment, decide
 // which side of the ledger it is on, and sort the two sides.
-func buildAmendOrder(held []*amendment, spec *Spec) *amendOrder {
+func buildAmendOrder(held []*amendment, descriptor *DataSetDescriptor) *amendOrder {
 	o := &amendOrder{}
-	levels := ordering1(spec)
+	levels := ordering1(descriptor)
 
 	for _, am := range held {
 		if am.added && am.clashed {
@@ -125,9 +125,9 @@ func buildAmendOrder(held []*amendment, spec *Spec) *amendOrder {
 			}
 			continue
 		}
-		at := amendTuple(am, place, spec.Sort)
+		at := amendTuple(am, place, descriptor.Sort)
 		switch {
-		case am.deleted || !Match(am.key, place, spec.Filter):
+		case am.deleted || !Match(am.key, place, descriptor.Filter):
 			// Nothing of ours goes out for it, and one of the child's will not
 			// either -- except for an addition, which was never one of the
 			// child's and so takes nothing away.

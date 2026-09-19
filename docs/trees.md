@@ -251,7 +251,8 @@ different one — or naming none, which makes it a leaf whatever its siblings do
 That is what lets one tree mix kinds: a host whose children are applications,
 an application whose children are windows, read out of three different places.
 
-**A node type is a Go function from a record to a Spec, not a small language.**
+* **A node type is a Go function from a record to a DataSetDescriptor, not a
+ small language.**
 Two or three constructors cover the shapes above. A language for saying this
 belongs with bundles authoring trees, which is a real thing to want later and a
 parser to write when something needs it rather than now.
@@ -355,7 +356,7 @@ of the machinery above.
 | | |
 |---|---|
 | its children | `eq parent <the parent's id>` |
-| the top level | the caller's own spec — `eq parent undefined`, or `0`, or `-1`, or whatever that table means by a root |
+| the top level | the caller's own descriptor — `eq parent undefined`, or `0`, or `-1`, or whatever that table means by a root |
 
 That is the whole of the configuration. There is no delimiter to choose, no
 field holding an address, no joining and no prefix, and the `starts` criterion
@@ -410,20 +411,22 @@ rather than a fallback for odd data.
 **Expandability at a graft is a count, not a read.** Decision 7 puts the field on
 the parent row, and across a graft that asks a row in one source to know
 something about another. Nobody will author that correctly. But the node type
-produces a `Spec`, and `CountOf` answers a Spec without reading a record: `Open`,
+produces a `DataSetDescriptor`, and `CountOf` answers one without reading a
+record: `Open`,
 count, `Close`. So three degrees, in the spirit of blank, placed and filled:
 
 | | |
 |---|---|
 | the field | where the row can say, which is free |
-| a count on the child spec | where the source can count — exact over records in hand |
+| a count on the child descriptor | where the source can count — exact over records in hand |
 | unknown | `CountOf` answers `Unknown()` for anything that is not `Counting`, so the twisty is drawn and the answer found on opening |
 
 A count per visible row is a real cost over a source that must be asked, and
 `docs/census.md` is how a whole page of them becomes one question.
 
 **A node type may change the SORT, and this is free.** It produces a whole
-`Spec`, and a Spec is a source, a filter and a sort. Windows in z-order under
+`DataSetDescriptor`, and one is a source, a filter and a sort. Windows in
+z-order under
 applications in name order needs nothing added. Worth writing down only because
 a capability nobody notices gets reinvented.
 
@@ -571,9 +574,11 @@ same eagerness, carrying the same warning, and no new one.
 3. Marks live on the SOURCE. Two views sharing a `TreeSource` share expansion,
    which is sometimes exactly right; a view wanting its own wraps its own, which
    is cheap because wrapping is all it is. On the data set instead, two data
-   sets over one spec would disagree about what the sequence contains, and "the
+   sets over one descriptor would disagree about what the sequence contains, and
+   "the
    same three name the same sequence" is load-bearing.
-4. A node type is a function from record to `Spec`, with constructors.
+4.  4. A node type is a function from record to `DataSetDescriptor`, with
+   constructors.
 5. A record keeps its identity; the PATH is a separate field — its container
    plus its name, read whole, or derived by descending — with a delimiter the
    caller chooses, and field names the caller gives. Identifying rows by path
@@ -597,7 +602,8 @@ same eagerness, carrying the same warning, and no new one.
    time -- so `undefined` or `false` is a leaf, `true` is children of unknown
    number, and a number is that many. Where the row cannot say — which is every
    graft, a row in one source having no business knowing about another — the
-   node type's `Spec` is counted rather than read, and `CountOf` answering
+   node type's `DataSetDescriptor` is counted rather than read, and `CountOf`
+   answering
    `Unknown()` is the third degree: draw the twisty and find out on opening. A
    census turns a page of those counts into one question.
 8. **A sort naming a field a record has not got is not refused.** It reads as

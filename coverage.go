@@ -71,13 +71,13 @@ type Roles struct {
 	Whole bool
 }
 
-// Roles groups this spec's fields by the part each plays.
+// Roles groups this descriptor's fields by the part each plays.
 //
 // The names are in the order they were first met -- sort levels top down, then
 // the filter tree -- and each appears once per group. A stable order matters
 // because this is stated over and over as a sequence is read, and a set that
 // reshuffles itself makes every statement look like a change.
-func (s *Spec) Roles() Roles {
+func (s *DataSetDescriptor) Roles() Roles {
 	var r Roles
 	if s == nil {
 		return r
@@ -232,11 +232,11 @@ type Extent struct {
 // stretch comes before which is a question about the ORDER, and comparing two
 // identities needs the records they name. Whoever asked holds that order and
 // can sort them; this cannot.
-func (c *CachedSource) Covers(spec *Spec) []Extent {
-	if spec == nil {
-		spec = &Spec{}
+func (c *CachedSource) Covers(descriptor *DataSetDescriptor) []Extent {
+	if descriptor == nil {
+		descriptor = &DataSetDescriptor{}
 	}
-	return hot.extents(c.key + "\x00" + dataSetKey(spec))
+	return hot.extents(c.key + "\x00" + dataSetKey(descriptor))
 }
 
 // extents is every run of one sequence, by the records at its ends.

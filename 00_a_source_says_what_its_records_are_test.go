@@ -316,7 +316,7 @@ func TestAWrapperOverASynchronousSourceNeverFires(t *testing.T) {
 	// It reports that it can tell -- it will, if ever there is anything -- and
 	// then there never is.
 	TellOnArrival(wrapped, func() { told++ })
-	if _, err := wrapped.Open(&Spec{}); err != nil {
+	if _, err := wrapped.Open(&DataSetDescriptor{}); err != nil {
 		t.Fatalf("stating a sequence: %v", err)
 	}
 	if told != 0 {
@@ -335,8 +335,8 @@ type later1 struct {
 	tells []func()
 }
 
-func (w *later1) Open(spec *Spec) (DataSet, error) {
-	set, err := w.ListSource.Open(spec)
+func (w *later1) Open(descriptor *DataSetDescriptor) (DataSet, error) {
+	set, err := w.ListSource.Open(descriptor)
 	if err != nil {
 		return nil, err
 	}
@@ -467,8 +467,8 @@ type tally struct {
 	asked []int // the Count of each scope read from it
 }
 
-func (c *tally) Open(spec *Spec) (DataSet, error) {
-	set, err := c.ListSource.Open(spec)
+func (c *tally) Open(descriptor *DataSetDescriptor) (DataSet, error) {
+	set, err := c.ListSource.Open(descriptor)
 	if err != nil {
 		return nil, err
 	}

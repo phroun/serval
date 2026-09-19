@@ -7,7 +7,7 @@ package serval
 // used two ways -- a predicate is a comparison with its answer thrown away
 // except for the sign.
 //
-// docs/ordering.md is the spec this implements.
+// docs/ordering.md is the descriptor this implements.
 
 import "strings"
 

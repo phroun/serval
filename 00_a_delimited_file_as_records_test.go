@@ -342,14 +342,14 @@ func TestADelimitedSourceSortsAndScopesLikeAnyOther(t *testing.T) {
 	opts.Header, opts.Infer = true, true
 	src, _ := load(t, "name,size\nparser.go,2048\nlexer.go,310\naudit.go,9001\n", opts)
 
-	got, done := gather(t, src, &Spec{Sort: []SortLevel{{Field: "size"}}}, &Scope{Count: 2})
+	got, done := gather(t, src, &DataSetDescriptor{Sort: []SortLevel{{Field: "size"}}}, &Scope{Count: 2})
 	if len(got) != 2 || got[0] != "1" || got[1] != "0" {
 		t.Errorf("sorted by size it read %v", got)
 	}
 	if done.Stop != StopFilled {
 		t.Errorf("it ended %s", done.Stop)
 	}
-	next, _ := gather(t, src, &Spec{Sort: []SortLevel{{Field: "size"}}},
+	next, _ := gather(t, src, &DataSetDescriptor{Sort: []SortLevel{{Field: "size"}}},
 		&Scope{After: done.Watermark, Count: 2})
 	if len(next) != 1 || next[0] != "2" {
 		t.Errorf("resuming read %v", next)

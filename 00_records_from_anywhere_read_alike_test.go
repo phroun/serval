@@ -16,9 +16,9 @@ func rows() []Row {
 }
 
 // gather reads a whole scope back as the keys that crossed, in order.
-func gather(t *testing.T, src Source, spec *Spec, s *Scope) ([]string, Complete) {
+func gather(t *testing.T, src Source, descriptor *DataSetDescriptor, s *Scope) ([]string, Complete) {
 	t.Helper()
-	set, err := src.Open(spec)
+	set, err := src.Open(descriptor)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,8 +37,8 @@ func TestRowsBuiltByHandAreASourceLikeAnyOther(t *testing.T) {
 		t.Fatalf("it holds %d records", src.Len())
 	}
 
-	spec := &Spec{Sort: []SortLevel{{Field: "name"}}}
-	got, done := gather(t, src, spec, &Scope{Count: 10})
+	descriptor := &DataSetDescriptor{Sort: []SortLevel{{Field: "name"}}}
+	got, done := gather(t, src, descriptor, &Scope{Count: 10})
 	if len(got) != 3 {
 		t.Fatalf("a full scope carried %v", got)
 	}
@@ -55,7 +55,7 @@ func TestRowsBuiltByHandAreASourceLikeAnyOther(t *testing.T) {
 // are here and the filter has already run.
 func TestAHandBuiltSourceCountsExactly(t *testing.T) {
 	src := NewListSource(rows())
-	set, err := src.Open(&Spec{Filter: &Filter{Op: OpGt, Field: "size", Values: []*Value{NewInt(500)}}})
+	set, err := src.Open(&DataSetDescriptor{Filter: &Filter{Op: OpGt, Field: "size", Values: []*Value{NewInt(500)}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,13 +73,13 @@ func TestAHandBuiltSourceCountsExactly(t *testing.T) {
 // engine rests on, and it does not care what read the records.
 func TestAHandBuiltScopeResumesFromAnIdentity(t *testing.T) {
 	src := NewListSource(rows())
-	spec := &Spec{Sort: []SortLevel{{Field: "name"}}}
+	descriptor := &DataSetDescriptor{Sort: []SortLevel{{Field: "name"}}}
 
-	first, done := gather(t, src, spec, &Scope{Count: 2})
+	first, done := gather(t, src, descriptor, &Scope{Count: 2})
 	if len(first) != 2 || done.Stop != StopFilled {
 		t.Fatalf("the first scope was %v, %s", first, done.Stop)
 	}
-	next, _ := gather(t, src, spec, &Scope{After: done.Watermark, Count: 2})
+	next, _ := gather(t, src, descriptor, &Scope{After: done.Watermark, Count: 2})
 	if len(next) != 1 || next[0] != "0" {
 		t.Errorf("resuming after %s read %v", done.Watermark, next)
 	}
@@ -88,7 +88,7 @@ func TestAHandBuiltScopeResumesFromAnIdentity(t *testing.T) {
 // An identity the sequence does not hold is refused rather than guessed at.
 func TestAHandBuiltSourceRefusesAnAfterItDoesNotHold(t *testing.T) {
 	src := NewListSource(rows())
-	_, done := gather(t, src, &Spec{}, &Scope{After: NewInt(99), Count: 10})
+	_, done := gather(t, src, &DataSetDescriptor{}, &Scope{After: NewInt(99), Count: 10})
 	if done.Error == "" {
 		t.Error("it answered from somewhere nobody asked about")
 	}
@@ -108,7 +108,7 @@ func TestHandBuiltRowsComposeWithAPSLDocument(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, _ := gather(t, c, &Spec{}, &Scope{Count: 10})
+	got, _ := gather(t, c, &DataSetDescriptor{}, &Scope{Count: 10})
 	if len(got) != 4 {
 		t.Fatalf("the composition carried %v", got)
 	}
