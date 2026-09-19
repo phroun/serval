@@ -32,6 +32,12 @@ package serval
 // place knows about threads instead of every source author having to be told a
 // rule they cannot see.
 //
+// **And a view is the outermost inch of what is mostly a data question.** Sources,
+// sequences, scopes, caches and the telling between them are a data service; that
+// one of its readers happens to be drawn on a thread of its own is a fact about
+// that reader. Pushing the thread down into the sources would make every one of
+// them carry a UI's constraint to suit its last consumer.
+//
 // # Several readers, one source
 //
 // Two readers may share one source -- they are reading one body of records, and
