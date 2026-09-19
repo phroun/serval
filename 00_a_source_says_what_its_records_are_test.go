@@ -7,7 +7,11 @@ package serval
 // and a tree assembled out of it would be wrong in a way that reads like the data
 // being wrong.
 
-import "testing"
+import (
+	"sync"
+	"testing"
+	"time"
+)
 
 // fileRows is a flat list that is really a hierarchy two different ways over:
 // each record carries both its parent's key and the directory it lives in, so one
@@ -316,5 +320,138 @@ func TestAWrapperOverASynchronousSourceNeverFires(t *testing.T) {
 	}
 	if told != 0 {
 		t.Errorf("it announced %d arrivals over a source that answers at once", told)
+	}
+}
+
+// --- a tree over a source that answers later ------------------------------
+
+// later1 is a source that answers a scope only when it is told to, which is what
+// a source across a connection does: Read sends a question and returns.
+type later1 struct {
+	*ListSource
+	mu    sync.Mutex
+	held  []func()
+	tells []func()
+}
+
+func (w *later1) Open(spec *Spec) (DataSet, error) {
+	set, err := w.ListSource.Open(spec)
+	if err != nil {
+		return nil, err
+	}
+	return &laterSet{w: w, set: set}, nil
+}
+
+func (w *later1) WhenArrived(tell func()) {
+	w.mu.Lock()
+	w.tells = append(w.tells, tell)
+	w.mu.Unlock()
+}
+
+// serve answers whatever is asked, whenever it is asked, until it is stopped --
+// which is what a connection's reader does. Polled, because a test standing in for
+// a socket has nothing else to be woken by.
+func (w *later1) serve() (stop func()) {
+	done := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			w.answer()
+			time.Sleep(time.Millisecond)
+		}
+	}()
+	return func() { close(done) }
+}
+
+// answer hands over every scope that was asked for and says so, the way a
+// connection's reader does when the far end replies.
+func (w *later1) answer() {
+	w.mu.Lock()
+	held, tells := w.held, w.tells
+	w.held = nil
+	w.mu.Unlock()
+	if len(held) == 0 {
+		return
+	}
+	for _, give := range held {
+		give()
+	}
+	for _, tell := range tells {
+		tell()
+	}
+}
+
+type laterSet struct {
+	w   *later1
+	set DataSet
+}
+
+func (s *laterSet) Read(sc *Scope, out Sink) error {
+	// Nothing is waited for: the answer is held until somebody answers it.
+	s.w.mu.Lock()
+	s.w.held = append(s.w.held, func() { _ = s.set.Read(sc, out) })
+	s.w.mu.Unlock()
+	return nil
+}
+func (s *laterSet) Close() { s.set.Close() }
+
+// **A tree flattens a source that answers LATER, and asks each level once.**
+//
+// Every part of this was a bug at some point today. The descent closed a level
+// before it was answered; the answer to the walk's own question was called news and
+// started another walk; and completing a walk rebuilt the sequence that had just
+// walked. So what is asserted is the whole shape: the rows arrive, the reader is
+// told once, and the level is asked ONCE.
+func TestATreeFlattensASourceThatAnswersLater(t *testing.T) {
+	far := &later1{ListSource: NewListSource(fileRows())}
+	opt, err := TreeHint{Parent: "up", Order: "rank"}.Options(far)
+	if err != nil {
+		t.Fatalf("what the hint becomes: %v", err)
+	}
+	tree, err := NewTreeSource(opt)
+	if err != nil {
+		t.Fatalf("stating the tree: %v", err)
+	}
+
+	told := make(chan struct{}, 16)
+	if !TellOnArrival(tree, func() { told <- struct{}{} }) {
+		t.Fatal("a tree over a source that answers later cannot say when it has")
+	}
+
+	set, err := tree.Open(nil)
+	if err != nil {
+		t.Fatalf("stating the sequence: %v", err)
+	}
+	defer set.Close()
+
+	// Readable and empty, which is what a sequence holding nothing YET is -- a nil
+	// index would mean it had been let go.
+	if got := len(captionsOf(t, set)); got != 0 {
+		t.Fatalf("it has %d rows before anything answered", got)
+	}
+
+	// The far end starts answering, and the walk gets through its levels.
+	stop := far.serve()
+	defer stop()
+	select {
+	case <-told:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the tree never said its flattening had completed")
+	}
+	if got := captionsOf(t, set); len(got) != 2 {
+		t.Fatalf("with the top level answered it reads %v, want the two roots", got)
+	}
+
+	// **And it is quiet.** An answer that arrived because the walk asked for it is
+	// not news, so nothing has gone round again.
+	select {
+	case <-told:
+		t.Error("it said so twice for one flattening: the walk's own answer was " +
+			"taken for news, which is how asking becomes a loop")
+	case <-time.After(150 * time.Millisecond):
 	}
 }

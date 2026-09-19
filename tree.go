@@ -160,6 +160,15 @@ type TreeSource struct {
 	// level's. See SortBy.
 	order map[string][]SortLevel
 
+	// tells are the readers of this tree, told when a flattening has COMPLETED.
+	//
+	// **A tree is Arriving in its own right, and that is the layering.** A level
+	// answering is news to the TREE -- it must walk again to take the records in.
+	// A walk finishing is news to whoever is reading the tree, because that is
+	// when the flattened rows exist. Telling readers what a level said, or
+	// rebuilding because a walk ended, both collapse those two into one and loop.
+	tells []func()
+
 	// later says at least one of this tree's levels answers AFTER its read
 	// returns, which is settled once when the tree is stated: the sources are
 	// fixed for its life, so whether any of them can arrive is too.
@@ -194,11 +203,23 @@ func NewTreeSource(o TreeOptions) (*TreeSource, error) {
 		}
 	}
 	o.Fields = o.Fields.orElse(TreeFieldsDefault)
-	return &TreeSource{
+	t := &TreeSource{
 		opt:   o,
 		live:  map[*treeDataSet]bool{},
 		later: answersLater(o),
-	}, nil
+	}
+	if t.later {
+		// A level answering means the tree must walk again to take the records
+		// in -- unless it is already walking, in which case the answer IS what
+		// the walk asked for. See levelArrived.
+		TellOnArrival(o.Source, t.levelArrived)
+		for _, nt := range o.Types.all() {
+			if nt != nil && nt.Source != nil {
+				TellOnArrival(nt.Source, t.levelArrived)
+			}
+		}
+	}
+	return t, nil
 }
 
 // answersLater reports whether any level of this tree may answer after its read
@@ -281,6 +302,57 @@ func (t *TreeSource) sortFor(kind string, spec *Spec) *Spec {
 	}
 	out.Sort = levels
 	return &out
+}
+
+// WhenArrived adds a reader to be told once a flattening has completed
+// (serval.Arriving).
+//
+// What a reader of a tree wants to know is that the ROWS are there, which is a
+// different moment from a level answering: one level of several has said its piece
+// and the walk goes on. So this fires when the walk is done, and nothing before.
+func (t *TreeSource) WhenArrived(tell func()) {
+	if tell == nil {
+		return
+	}
+	t.mu.Lock()
+	t.tells = append(t.tells, tell)
+	t.mu.Unlock()
+}
+
+// arrived tells this tree's readers that a flattening has completed.
+func (t *TreeSource) arrived() {
+	t.mu.Lock()
+	tells := make([]func(), len(t.tells))
+	copy(tells, t.tells)
+	t.mu.Unlock()
+	for _, tell := range tells {
+		tell()
+	}
+}
+
+// levelArrived is one of this tree's sources saying its answer has landed.
+//
+// **An answer that arrives while a walk is in flight is that walk's own**, and
+// telling the tree to walk again for it is how asking turns into a loop: the walk
+// asks, the answer comes, the answer is called news, a new walk asks the same
+// question. That is exactly what happened -- eight hundred thousand queries, each
+// one answered, each answer starting the next.
+//
+// So an answer during a walk is left to the walk that asked for it, and an answer
+// at any other time is something that changed and the flattening is out of date.
+func (t *TreeSource) levelArrived() {
+	t.mu.Lock()
+	for set := range t.live {
+		set.mu.Lock()
+		walking := set.walking
+		set.mu.Unlock()
+		if walking {
+			t.mu.Unlock()
+			return
+		}
+	}
+	t.mu.Unlock()
+	t.tell()
 }
 
 // Stale says that what this tree flattens has changed: a level's source was
@@ -436,6 +508,13 @@ func (v *treeDataSet) build() error {
 		return nil
 	}
 	v.walking = true
+	if v.at == nil {
+		// **An empty sequence and not a closed one.** A nil index is how this says
+		// it has been let go, and a walk that has not finished has not been let go
+		// -- it holds nothing YET. Reading it before the first answer is ordinary
+		// and answers no rows, which is what a view draws while it waits.
+		v.rows, v.at = nil, map[string]int{}
+	}
 	v.mu.Unlock()
 
 	go func() {
@@ -447,7 +526,10 @@ func (v *treeDataSet) build() error {
 		if err != nil || closed {
 			return
 		}
-		v.tree.tell()
+		// The ROWS are there now, so whoever is reading this tree can read them.
+		// Not `tell`: that rebuilds every live sequence, which would walk this one
+		// again for the answer it just finished taking in.
+		v.tree.arrived()
 	}()
 	return nil
 }
