@@ -386,6 +386,49 @@ func TestATreeOverLocationsKeysItsMarksByPath(t *testing.T) {
 	}
 }
 
+// And the tree SAYS which of the two a kind's segment is, because a caller
+// reaching in from the side has to spell a chain the way the walk spells it.
+//
+// It cannot work it out: it holds a row's identity and its path and has no way to
+// know which one a mark is filed under. Guessing is wrong exactly where it is
+// hardest to see -- a chain naming a node that is not there opens nothing, reports
+// nothing, and leaves a twisty that was drawn from a real child count sitting there
+// unmoved.
+func TestATreeSaysWhetherAKindIsMarkedByItsPath(t *testing.T) {
+	byPath, err := NewTreeSource(TreeOptions{
+		Source: folders(),
+		Spec:   &Spec{Filter: &Filter{Op: OpEq, Field: "location", Values: []*Value{NewText("/")}}},
+		Types: NodeTypes{Default: &NodeType{
+			Children: here.ChildrenByLocation("location"),
+			Standing: here,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !byPath.MarkedByPath("") {
+		t.Error("a tree descending by location says its marks are keyed by identity")
+	}
+
+	// An adjacency list has no standing and no path, so its segment is the key --
+	// which is also what every tree did before a standing existed.
+	byKey, err := NewTreeSource(TreeOptions{
+		Source: people(),
+		Spec:   &Spec{Filter: &Filter{Op: OpEq, Field: "parent", Values: []*Value{nil}}},
+		Types:  NodeTypes{Default: &NodeType{Children: ChildrenByKey("parent")}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if byKey.MarkedByPath("") {
+		t.Error("an adjacency list says its marks are keyed by path")
+	}
+	// A kind nobody declared is nobody's standing, so it is not by path either.
+	if byPath.MarkedByPath("no such kind") {
+		t.Error("a kind that does not exist says its marks are keyed by path")
+	}
+}
+
 // --- cycles -------------------------------------------------------------
 
 // looper is a node that is its own parent, which is the smallest cycle there is.

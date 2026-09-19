@@ -261,6 +261,28 @@ func (t *TreeSource) ExpandAll(chain ...string) { t.moved(func() { t.mark.OpenAl
 func (t *TreeSource) Collapse(chain ...string)  { t.moved(func() { t.mark.Close(chain...) }) }
 func (t *TreeSource) CollapseAll()              { t.moved(t.mark.Clear) }
 
+// MarkedByPath reports whether one KIND of row's mark segment is its path rather
+// than its identity.
+//
+// **A chain handed to Expand has to be spelled the way the walk spells it**, and
+// the walk spells a level with a standing by path -- see `descent.level`, and
+// `Standing.Paths`, which is where the two answers are decided. A caller reaching
+// in from the side has neither in hand, so it asks.
+//
+// It is per kind because a standing is: a tree of applications under hosts
+// descends by key at one level and might descend by address at the next, and there
+// is one right answer per level rather than one per tree.
+//
+// Without this a reader guesses, and the guess is wrong exactly where it is hard
+// to see: a location-descended tree drew its twisties from the child counts, took
+// an Expand keyed by identity, matched nothing, and opened nothing -- with no error
+// anywhere, because a chain naming a node that is not there is an ordinary thing to
+// ask about.
+func (t *TreeSource) MarkedByPath(kind string) bool {
+	nt := t.opt.Types.Get(kind)
+	return nt != nil && nt.Standing.Paths()
+}
+
 // SortBy restates how each KIND of row is ordered among its siblings, and tells
 // every sequence stated over this tree.
 //
