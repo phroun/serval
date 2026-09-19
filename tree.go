@@ -198,8 +198,29 @@ func (t *TreeSource) ExpandAll(chain ...string) { t.moved(func() { t.mark.OpenAl
 func (t *TreeSource) Collapse(chain ...string)  { t.moved(func() { t.mark.Close(chain...) }) }
 func (t *TreeSource) CollapseAll()              { t.moved(t.mark.Clear) }
 
+// Stale says that what this tree flattens has changed: a level's source was
+// restated, a record was altered, one arrived or one went.
+//
+// **Told, never decided.** A tree reads several sources at several levels and
+// holds the flattening; nothing here asks any of them whether they still say
+// what they said. Whoever changed one says so, and every sequence stated over
+// this tree is built again.
+//
+// **It takes no Notice, because a tree's flattening is total.** The pre-order is
+// one walk over every level, so a record altered anywhere can change which rows
+// are visible, how deep they stand and what their twisties say -- there is no run
+// of one level kept apart from the rest for a reason to narrow. Taking the fields
+// would be taking a parameter this version does not read. Narrowing the walk is
+// what a later one would want a Notice for, and it can have one then.
+func (t *TreeSource) Stale() { t.tell() }
+
 func (t *TreeSource) moved(do func()) {
 	do()
+	t.tell()
+}
+
+// tell is the rebuild every live sequence owes, once something has said so.
+func (t *TreeSource) tell() {
 	t.mu.Lock()
 	sets := make([]*treeDataSet, 0, len(t.live))
 	for s := range t.live {

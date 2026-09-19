@@ -64,13 +64,43 @@ type ListSource struct {
 }
 
 // NewListSource presents rows already in memory as a source. The rows are the
-// source's from here: it does not copy them and it does not change them.
+// source's from here: it does not copy them and it does not change them. What
+// it does with a different set of them is Restate.
 func NewListSource(rows []Row) *ListSource {
 	return &ListSource{rows: rows, cache: map[string]*ordering{}}
 }
 
 // Len is how many records the source holds, before any filter.
-func (l *ListSource) Len() int { return len(l.rows) }
+func (l *ListSource) Len() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.rows)
+}
+
+// Restate says the list is now these rows.
+//
+// **It is told, never decided.** Nothing here watches the slice it was handed,
+// compares a length or a generation, or looks again to see: whoever holds the
+// rows says they have changed, and that saying is this. A list nobody tells
+// holds what it holds, which is the same bargain a cache makes.
+//
+// What it costs is the orderings: every sequence this source had worked out is
+// forgotten, the records that decided where each one stood no longer being the
+// records.
+//
+// **A sequence already stated goes on answering the one it stated.** An ordering
+// holds the rows it was built over, so a data set opened before this reads the
+// list as it was -- asked once and answered once, which is the rule everywhere
+// else and wants no exception here. A caller who wants the new rows states a new
+// sequence; one holding a CachedSource in front of this tells it `Stale` so the
+// runs it kept go too, and one holding a TreeSource tells that.
+func (l *ListSource) Restate(rows []Row) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.rows = rows
+	l.cache = map[string]*ordering{}
+	l.recent = nil
+}
 
 // Open states a sequence over the records: one filter, one sort.
 func (l *ListSource) Open(spec *Spec) (DataSet, error) {
@@ -105,6 +135,14 @@ func supported(levels []SortLevel) error {
 }
 
 type ordering struct {
+	// over is the rows this ordering was built against, and `rows` indexes into
+	// it. **It is held here rather than read off the source**, because a list can
+	// be RESTATED and a sequence already stated goes on answering the sequence it
+	// stated -- asked once and answered once, which is the rule everywhere else
+	// and would otherwise have an exception here. Indices into a slice somebody
+	// has since replaced name different records, or none.
+	over []Row
+
 	rows   []int
 	tuples [][]*Value
 	levels []Level
@@ -148,7 +186,7 @@ func (l *ListSource) order(spec *Spec) *ordering {
 
 	// The filter runs first, so a record that is not in the sequence is never
 	// sorted and never has its sort fields read.
-	o := &ordering{levels: ordering1(spec)}
+	o := &ordering{over: l.rows, levels: ordering1(spec)}
 	for i := range l.rows {
 		if !Match(l.rows[i].Key(), l.rows[i], spec.Filter) {
 			continue
@@ -322,7 +360,7 @@ func (v *listDataSet) Read(s *Scope, out Sink) error {
 			// ends before its first record began nowhere and says nothing.
 			done.First = Exactly(i)
 		}
-		rec := v.src.rows[o.rows[i]]
+		rec := o.over[o.rows[i]]
 		bag, has, whole := v.fields(rec)
 		var err error
 		if whole {
