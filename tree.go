@@ -159,6 +159,17 @@ type TreeSource struct {
 	// by kind name, the empty name being the default kind, which is the top
 	// level's. See SortBy.
 	order map[string][]SortLevel
+
+	// later says at least one of this tree's levels answers AFTER its read
+	// returns, which is settled once when the tree is stated: the sources are
+	// fixed for its life, so whether any of them can arrive is too.
+	//
+	// A tree of sources that all answer at once flattens exactly as it always
+	// did -- on the thread that asked, with the rows there when build returns.
+	// One that may wait does the walk on a goroutine of its own, because the
+	// answer it waits for arrives on a thread that may be waiting for this one.
+	// See build.
+	later bool
 }
 
 // NewTreeSource makes one, and refuses what cannot be used.
@@ -183,7 +194,32 @@ func NewTreeSource(o TreeOptions) (*TreeSource, error) {
 		}
 	}
 	o.Fields = o.Fields.orElse(TreeFieldsDefault)
-	return &TreeSource{opt: o, live: map[*treeDataSet]bool{}}, nil
+	return &TreeSource{
+		opt:   o,
+		live:  map[*treeDataSet]bool{},
+		later: answersLater(o),
+	}, nil
+}
+
+// answersLater reports whether any level of this tree may answer after its read
+// returns.
+//
+// Asked of every source the tree will read -- the top level's and each node
+// type's -- because one of them being across a connection is enough to make the
+// whole flattening wait somewhere.
+func answersLater(o TreeOptions) bool {
+	if _, ok := o.Source.(Arriving); ok {
+		return true
+	}
+	for _, nt := range o.Types.all() {
+		if nt == nil || nt.Source == nil {
+			continue
+		}
+		if _, ok := nt.Source.(Arriving); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // Marks is the expansion, for a caller that wants to set it directly. The tree's
@@ -331,6 +367,11 @@ type treeDataSet struct {
 	rows []treeRow
 	at   map[string]int // where each row stands, by identity
 	err  error          // what the last build ran into, answered on the next Read
+
+	// walking says a flattening is in flight, for a tree whose levels may answer
+	// later. It is what stops a second walk asking every level the same question
+	// again while the first is still being answered.
+	walking bool
 }
 
 func (v *treeDataSet) Close() {
@@ -366,7 +407,53 @@ func (v *treeDataSet) rebuild() {
 	_ = v.build()
 }
 
+// build flattens the tree.
+//
+// **A tree whose levels all answer at once flattens HERE**, on the thread that
+// asked, with the rows in place when this returns -- which is every tree over
+// records in hand, and is what every reader of one has always seen.
+//
+// A tree that may WAIT walks on a goroutine of its own and this returns at once,
+// because the answer it waits for arrives on a thread that may in turn be waiting
+// for this one: a display's connection reader hands a batch to the drawing thread
+// and waits for it, so a flattening that blocked the drawing thread for an answer
+// would be waiting for the thread that has to deliver it. Nothing here knows that
+// -- it is simply why waiting is done somewhere of its own.
+//
+// When such a walk finishes it TELLS, which is how a reader learns to read again.
+// It is the same saying a mark moved uses, and the reason there is no polling
+// anywhere in this.
 func (v *treeDataSet) build() error {
+	if !v.tree.later {
+		return v.walk()
+	}
+	v.mu.Lock()
+	if v.walking {
+		// One walk is enough. A second would ask every level the same question
+		// again while the first was still being answered, which is how asking
+		// turns into a loop.
+		v.mu.Unlock()
+		return nil
+	}
+	v.walking = true
+	v.mu.Unlock()
+
+	go func() {
+		err := v.walk()
+		v.mu.Lock()
+		v.walking = false
+		closed := v.at == nil
+		v.mu.Unlock()
+		if err != nil || closed {
+			return
+		}
+		v.tree.tell()
+	}()
+	return nil
+}
+
+// walk is the flattening itself, wherever it is being done.
+func (v *treeDataSet) walk() error {
 	d := &descent{set: v, tree: v.tree}
 	// The top level's rows are of the default kind, read out of the tree's own
 	// source by the tree's own spec.
@@ -538,18 +625,27 @@ func (d *descent) level(kind string, src Source, spec *Spec, st Standing,
 	if err != nil {
 		return err
 	}
-	var got levelRows
-	err = set.Read(&Scope{Count: everyRow}, &got)
+	// **Read, then WAIT, and only then close.** A source holding its records has
+	// filled the sink and called Done on the way out, so the wait returns at once
+	// and this is the same three lines it always was. One across a connection has
+	// only sent a question -- and closing before the answer came hung up on it,
+	// which is a question asked and deliberately not listened for.
+	got := newLevelRows()
+	err = set.Read(&Scope{Count: everyRow}, got)
+	if err == nil {
+		got.wait()
+	}
 	set.Close()
 	if err != nil {
 		return err
 	}
-	if got.err != "" {
-		return fmt.Errorf("tree: reading a level: %s", got.err)
+	ids, fields1, readErr := got.reading()
+	if readErr != "" {
+		return fmt.Errorf("tree: reading a level: %s", readErr)
 	}
 
-	for i := range got.ids {
-		id, fields := got.ids[i], got.fields[i]
+	for i := range ids {
+		id, fields := ids[i], fields1[i]
 		path := st.PathOf(above.Path, id, fields)
 		node := Node{Key: id, Fields: fields, Path: path}
 
@@ -764,20 +860,68 @@ func (d *descent) emit(of Node, kind string, depth int, state Mark, children Rec
 }
 
 // levelRows takes one level entire.
+// A levelRows takes one level's answer, and knows when it has all of it.
+//
+// **Knowing when matters, because not every source answers before Read returns.**
+// One holding its records fills this and calls Done on the way out; one across a
+// connection has only sent a question, and Done comes later on whatever thread
+// the answer arrives on. A descent that closed the level in between hung up before
+// being answered -- which is what `over` is here to stop.
 type levelRows struct {
+	mu     sync.Mutex
 	ids    []*Value
 	fields []Record
 	err    string
+
+	done bool
+	over chan struct{} // closed once, when Done comes
 }
+
+func newLevelRows() *levelRows { return &levelRows{over: make(chan struct{})} }
 
 func (l *levelRows) Ordered() {}
 func (l *levelRows) Record(id *Value, f Record) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.ids = append(l.ids, id)
 	l.fields = append(l.fields, f)
 	return nil
 }
 func (l *levelRows) Subset(id *Value, f Record, _ Totals) error { return l.Record(id, f) }
-func (l *levelRows) Done(c Complete)                            { l.err = c.Error }
+func (l *levelRows) Done(c Complete) {
+	l.mu.Lock()
+	if l.done {
+		l.mu.Unlock()
+		return
+	}
+	l.done, l.err = true, c.Error
+	l.mu.Unlock()
+	close(l.over)
+}
+
+// wait holds until the whole of this level has arrived.
+//
+// It returns at once for a source that answered on the way out, which is every
+// synchronous one -- so nothing waits that had no reason to. Where it does wait it
+// is never on a thread that the answer needs: an asynchronous tree walks on a
+// goroutine of its own, for exactly this. See build.
+func (l *levelRows) wait() {
+	l.mu.Lock()
+	done := l.done
+	l.mu.Unlock()
+	if done {
+		return
+	}
+	<-l.over
+}
+
+// reading is what arrived, under the lock, because a record may still be landing
+// as this is read.
+func (l *levelRows) reading() (ids []*Value, fields []Record, err string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.ids, l.fields, l.err
+}
 
 // A TreeFielded source says what names it writes its tree fields under.
 //

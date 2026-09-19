@@ -290,6 +290,19 @@ type NodeTypes struct {
 	Field string
 }
 
+// all is every type this set holds, for whoever wants to ask something of each of
+// them rather than of one. Unordered, because nothing about a SET of types is.
+func (n NodeTypes) all() []*NodeType {
+	out := make([]*NodeType, 0, len(n.Named)+1)
+	if n.Default != nil {
+		out = append(out, n.Default)
+	}
+	for _, nt := range n.Named {
+		out = append(out, nt)
+	}
+	return out
+}
+
 // Get is the type of that name, and the default for an empty one.
 func (c NodeTypes) Get(name string) *NodeType {
 	if name == "" {
