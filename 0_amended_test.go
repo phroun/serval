@@ -1235,3 +1235,108 @@ func TestWhatIsHeldCanBeReadBack(t *testing.T) {
 		t.Errorf("after forgetting one, %d are held", got)
 	}
 }
+
+// --- what a scope is complete up to ---------------------------------------
+
+// oversending ignores the COUNT and sends everything from the boundary on, then says
+// exhausted. Ignoring the count is the least an application can do and is documented
+// as correct -- below a size the author picks it is also the fastest, and
+// `hosting-a-query.md` shows it first.
+//
+// It honours `After`, because that is a different promise and the two are worth
+// keeping apart: dropping the count only makes an answer bigger, while dropping the
+// boundary answers a question nobody asked.
+type oversending struct{ n int }
+
+func (o *oversending) Open(*Spec) (DataSet, error) { return &oversendingSet{n: o.n}, nil }
+
+type oversendingSet struct{ n int }
+
+func (s *oversendingSet) Read(sc *Scope, out Sink) error {
+	from := 0
+	if sc != nil && sc.After != nil {
+		from = int(sc.After.Int) + 1
+	}
+	out.Ordered()
+	for i := from; i < s.n; i++ {
+		if err := out.Record(NewInt(int64(i)), Record{Named("name", "r")}); err != nil {
+			return err
+		}
+	}
+	out.Done(Complete{Stop: StopExhausted})
+	return nil
+}
+func (s *oversendingSet) Close() {}
+
+// **A trimmed scope is FILLED and not exhausted**, whatever the child said.
+//
+// The child is right about its own answer and wrong about this one: it sent four
+// records and said there was nothing past them, this passed three on, and the fourth
+// is past the end of what went out. Saying "exhausted" would lose it -- a reader
+// would hold three records and believe there were three, and never ask again.
+//
+// Worth a test of its own because it is the one case where the child's completion
+// must not be believed, and because the child doing this is correct rather than
+// sloppy: honouring the count is optional and every other hint an application drops
+// only makes an answer bigger.
+func TestATrimmedScopeIsFilledAndNotExhausted(t *testing.T) {
+	a := NewAmendedSource(&oversending{n: 4})
+	set, err := a.Open(&Spec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer set.Close()
+
+	var got collector
+	if err := set.Read(&Scope{Count: 3}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.keys) != 3 {
+		t.Fatalf("it passed on %d records (%s), want the three that were asked for",
+			len(got.keys), got.joined())
+	}
+	if got.done.Stop != StopFilled {
+		t.Errorf("the scope stopped %v, want filled -- the fourth record is past it",
+			got.done.Stop)
+	}
+	// And complete UP TO the last one that went out, so the next scope has somewhere
+	// to resume from. An exhausted scope carries no watermark, which is the other half
+	// of why the wrong answer here is expensive.
+	if got.done.Watermark == nil {
+		t.Error("it is complete up to nothing, so there is no way to ask for the rest")
+	} else if !Equal(got.done.Watermark, NewInt(2)) {
+		t.Errorf("it is complete up to %v, want the last record sent", got.done.Watermark)
+	}
+
+	// The rest is then askable, which is the point of getting the completion right.
+	var rest collector
+	if err := set.Read(&Scope{After: got.done.Watermark, Count: 3}, &rest); err != nil {
+		t.Fatal(err)
+	}
+	if rest.joined() != "3" {
+		t.Errorf("the next scope reads %q, want the record that was trimmed", rest.joined())
+	}
+	if rest.done.Stop != StopExhausted {
+		t.Errorf("and it stopped %v, want exhausted this time", rest.done.Stop)
+	}
+}
+
+// A child that sends exactly what was asked for and says it is exhausted is telling
+// the truth, and it is passed on -- nothing was trimmed, so there really is nothing
+// past the end and the next question is saved.
+func TestAnUntrimmedScopeKeepsTheChildsExhausted(t *testing.T) {
+	a := NewAmendedSource(&oversending{n: 3})
+	set, err := a.Open(&Spec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer set.Close()
+
+	var got collector
+	if err := set.Read(&Scope{Count: 3}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.done.Stop != StopExhausted {
+		t.Errorf("the scope stopped %v, want the child's exhausted", got.done.Stop)
+	}
+}

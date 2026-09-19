@@ -617,6 +617,11 @@ func (s *amendedSet) Read(sc *Scope, out Sink) error {
 // A merge is one scope being answered: this source's own records for it, and
 // the child's, going out as one run.
 type merge struct {
+	// trimmed marks that a record of the child's was dropped for being past the
+	// count, which is what keeps `exhausted` from being passed on as though the
+	// surplus had never existed. See Done.
+	trimmed bool
+
 	set    *amendedSet
 	want   *Scope
 	out    Sink
@@ -795,6 +800,11 @@ func (m *merge) theirs(key *Value, fields Record, has Totals, whole bool) error 
 	}
 	m.flushBefore(recordTuple(key, fields, m.set.spec.Sort))
 	if m.full() {
+		// **A record of the child's, dropped for being past the count.** Written
+		// down because it decides what this scope is complete UP TO: the child may
+		// go on to say it is exhausted, and it would be right about its own answer
+		// and wrong about this one. There is something past the end -- this.
+		m.trimmed = true
 		return nil
 	}
 	return m.emit(key, fields, has, whole)
@@ -853,11 +863,18 @@ func (m *merge) Done(c Complete) {
 	case c.Error != "":
 	case m.joined:
 		out.Stop = StopJoined
-	case c.Stop == StopExhausted && m.waiting() == 0:
+	case c.Stop == StopExhausted && m.waiting() == 0 && !m.trimmed:
 		// Everything of ours from the boundary on has gone out, so where the
 		// child had nothing more, neither has anyone. This outranks a scope
 		// that also happened to fill: there being nothing past the end is the
 		// stronger fact, and the one that saves the next question.
+		//
+		// **Unless records of the child's were trimmed**, and then it is not the
+		// stronger fact, it is a false one. A child under no obligation to honour
+		// the count -- which is the least an application can do, and correct -- sends
+		// everything and says exhausted; the surplus stopped here, and passing
+		// "nothing past the end" on would lose it. The reader would hold three
+		// records and believe there were three.
 		out.Stop = StopExhausted
 	case m.full():
 		out.Stop = StopFilled
