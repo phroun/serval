@@ -109,6 +109,13 @@ func buildAmendOrder(held []*amendment, spec *Spec) *amendOrder {
 			// and this one is neither sent nor subtracted.
 			continue
 		}
+		if am.altered {
+			// **An alteration is not in the arrangement.** It has no record to send
+			// and takes none away: the child's goes out in the child's place with
+			// our members written over it, so there is nothing here to place, to
+			// sort, or to rule in or out of a scope. See AmendedSource.Alter.
+			continue
+		}
 		place := am.place()
 		if place == nil {
 			// A deletion nobody has seen the record of. It cannot be placed, so

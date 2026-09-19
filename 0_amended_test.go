@@ -1024,3 +1024,214 @@ func TestAClashedAdditionIsCountedByTheChildAndNotTwice(t *testing.T) {
 		t.Errorf("once the child's record stood it counted %s", got)
 	}
 }
+
+// --- altering some of a record ---------------------------------------------
+
+// An alteration says SOME of a record and the rest is the child's, which is what a
+// cell edit is: a reader changed one member and said nothing about the others.
+func TestAnAlterationChangesSomeOfTheChildsRecord(t *testing.T) {
+	a := amendable(t)
+	a.Alter(key(2), Record{Named(".name", "go.mod.orig")})
+
+	out, _ := read(t, a, bySize(), &Scope{Count: 4})
+	if out.joined() != "2,1,0,3" {
+		t.Fatalf("the sequence is %s", out.joined())
+	}
+	// The member that was altered, and the one that was not -- which is the whole
+	// difference from Replace, where the bag is only what was handed in.
+	if got := out.fields[0].Get(".name"); !Equal(got, NewText("go.mod.orig")) {
+		t.Errorf("the altered member reads %v", got)
+	}
+	if got := out.fields[0].Get(".size"); !Equal(got, NewInt(96)) {
+		t.Errorf("the member nobody altered reads %v, want the child's own", got)
+	}
+}
+
+// **An alteration cannot move the record.** The child applies the filter and the
+// sort and places it; this touches what it HOLDS on the way past. So a reader who
+// edits a cell does not have the row leap away from under the cursor, and the new
+// position waits for the next question -- which is the point of it, not a shortcut.
+func TestAnAlterationLeavesTheRecordWhereTheChildPutIt(t *testing.T) {
+	a := amendable(t)
+	// 96 was the smallest, so by size it came first. A replacement of 99999 moves it
+	// to the end (see TestAReplacementIsPlacedByItsOwnValues); an alteration does not.
+	a.Alter(key(2), Record{Named(".size", 99999)})
+
+	out, _ := read(t, a, bySize(), &Scope{Count: 4})
+	if out.joined() != "2,1,0,3" {
+		t.Errorf("the sequence is %s, want the child's own order", out.joined())
+	}
+	if got := out.fields[0].Get(".size"); !Equal(got, NewInt(99999)) {
+		t.Errorf("the altered member reads %v", got)
+	}
+}
+
+// And it cannot change how many there are: the child counted it and still does.
+func TestAnAlterationDoesNotChangeTheCount(t *testing.T) {
+	a := amendable(t)
+	count := func() RecordCount {
+		set, err := a.Open(bySize())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer set.Close()
+		return CountOf(set)
+	}
+	before := count()
+	a.Alter(key(2), Record{Named(".size", 99999)})
+	if after := count(); after != before {
+		t.Errorf("the count went from %v to %v", before, after)
+	}
+}
+
+// **Altering accumulates.** Two edits to two members of one row are two calls, and
+// the second must not lose the first -- which is the case a view hits immediately,
+// a reader tabbing from one column to the next.
+func TestAlteringTwiceKeepsBothMembers(t *testing.T) {
+	a := amendable(t)
+	a.Alter(key(2), Record{Named(".name", "first")})
+	a.Alter(key(2), Record{Named(".size", 777)})
+
+	out, _ := read(t, a, bySize(), &Scope{Count: 4})
+	if got := out.fields[0].Get(".name"); !Equal(got, NewText("first")) {
+		t.Errorf("the first edit reads %v; the second lost it", got)
+	}
+	if got := out.fields[0].Get(".size"); !Equal(got, NewInt(777)) {
+		t.Errorf("the second edit reads %v", got)
+	}
+}
+
+// Altering a record that was REPLACED writes into the replacement, both being
+// statements about the same key and a replacement being a record entire.
+func TestAlteringAReplacementWritesIntoIt(t *testing.T) {
+	a := amendable(t)
+	a.Replace(key(2), fields("mine", 5))
+	a.Alter(key(2), Record{Named(".name", "mine, corrected")})
+
+	out, _ := read(t, a, bySize(), &Scope{Count: 4})
+	var got Record
+	for i, k := range out.keys {
+		if k == valueText(key(2)) {
+			got = out.fields[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("the record is not in %s", out.joined())
+	}
+	if v := got.Get(".name"); !Equal(v, NewText("mine, corrected")) {
+		t.Errorf("the name reads %v", v)
+	}
+	if v := got.Get(".size"); !Equal(v, NewInt(5)) {
+		t.Errorf("the size reads %v, want the replacement's own", v)
+	}
+}
+
+// Altering a record that was DELETED says nothing. Gone is gone, and bringing it
+// back under some of its members would invent the rest.
+func TestAlteringADeletedRecordSaysNothing(t *testing.T) {
+	a := amendable(t)
+	a.Delete(key(1), fields("build.sh", 310))
+	a.Alter(key(1), Record{Named(".name", "back again")})
+
+	out, _ := read(t, a, bySize(), &Scope{Count: 4})
+	if strings.Contains(out.joined(), "1") {
+		t.Errorf("the deleted record is back: %s", out.joined())
+	}
+	held := a.Amendments()
+	if len(held) != 1 || held[0].How != Removed {
+		t.Fatalf("what is held is %v, want the deletion alone", held)
+	}
+	// **And it carries nothing**, which is what somebody saving these out reads.
+	// "Removed, and here are some fields" is not a statement about anything: the
+	// record is gone, and members left on it would be written to a file as though
+	// they were in force.
+	if held[0].Fields != nil {
+		t.Errorf("the deletion carries %s", held[0].Fields)
+	}
+}
+
+// An alteration against a key the child does not send means nothing: there is no
+// record to alter, and inventing one would be an addition by accident.
+func TestAnAlterationOfNothingAddsNothing(t *testing.T) {
+	a := amendable(t)
+	a.Alter(key(99), Record{Named(".name", "not a record of the child's")})
+
+	out, _ := read(t, a, bySize(), &Scope{Count: 10})
+	if strings.Contains(out.joined(), "99") {
+		t.Errorf("an alteration added a record: %s", out.joined())
+	}
+}
+
+// --- reading back what is held --------------------------------------------
+
+// **What is held can be asked for**, because an amendment is meant to outlive the
+// session that made it: somebody has to write these to a file or a database, and
+// diffing the records against a child that has moved on is not a way to find them.
+func TestWhatIsHeldCanBeReadBack(t *testing.T) {
+	a := amendable(t)
+	if a.Amended() {
+		t.Error("a fresh source says it holds something")
+	}
+
+	a.Replace(key(0), fields("replaced", 1))
+	a.Alter(key(1), Record{Named(".name", "altered")})
+	a.Add(key(50), fields("added", 2))
+	a.Delete(key(3), fields("gone", 3))
+
+	if !a.Amended() {
+		t.Error("it says it holds nothing")
+	}
+	held := a.Amendments()
+	if len(held) != 4 {
+		t.Fatalf("it holds %d amendments, want four", len(held))
+	}
+
+	// The four facts about a record, in the same words a source ANNOUNCES one with.
+	byKey := map[string]Amendment{}
+	for _, am := range held {
+		byKey[Key(am.Key)] = am
+	}
+	for _, want := range []struct {
+		key  int64
+		how  Change
+		name string
+	}{
+		{0, Replaced, "replaced"},
+		{1, Altered, "altered"},
+		{50, Added, "added"},
+		{3, Removed, ""},
+	} {
+		am, ok := byKey[Key(key(want.key))]
+		if !ok {
+			t.Errorf("nothing is held for %d", want.key)
+			continue
+		}
+		if am.How != want.how {
+			t.Errorf("%d is held as %v, want %v", want.key, am.How, want.how)
+		}
+		if want.name == "" {
+			// A deletion states nothing of the record: it is gone.
+			if am.Fields != nil {
+				t.Errorf("the deletion carries %s", am.Fields)
+			}
+			continue
+		}
+		if got := am.Fields.Get(".name"); !Equal(got, NewText(want.name)) {
+			t.Errorf("%d carries %v", want.key, got)
+		}
+	}
+
+	// A stable order, which is what somebody writing a file wants. Not the order
+	// they were made in: one statement per key, so that order is already collapsed.
+	for i := 1; i < len(held); i++ {
+		if Key(held[i-1].Key) > Key(held[i].Key) {
+			t.Errorf("amendment %d sorts after %d", i-1, i)
+		}
+	}
+
+	// And forgetting one takes it out of what is held.
+	a.Forget(key(1))
+	if got := len(a.Amendments()); got != 3 {
+		t.Errorf("after forgetting one, %d are held", got)
+	}
+}

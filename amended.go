@@ -40,6 +40,7 @@ package serval
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 )
 
@@ -89,9 +90,16 @@ func NewAmendedSource(child Source) *AmendedSource {
 // predicted rather than discovered.
 type amendment struct {
 	key     *Value
-	fields  Record // the replacement's or addition's content; nil for a deletion
+	fields  Record // the replacement's, addition's or alteration's content; nil for a deletion
 	deleted bool
 	seen    Record // last known fields of a deleted record
+
+	// altered marks a statement about SOME of a record rather than all of it:
+	// `fields` is then the members that change and the rest is the child's. It is
+	// the one amendment that does not stand on its own -- there is nothing to send
+	// for a key the child never sends -- and the one that cannot move a record,
+	// because the child places it and only its contents are touched afterwards.
+	altered bool
 
 	// added marks a record of this source's own rather than a statement about
 	// one of the child's, and clashed marks one whose key turned out to be the
@@ -122,6 +130,82 @@ func (a *AmendedSource) Replace(key *Value, fields Record) {
 	a.gen++
 	a.mu.Unlock()
 	a.notes.ranksGone()
+}
+
+// Alter says SOME of a record changes and the rest is the child's.
+//
+// The one amendment that is not a record entire, and it is what a cell edit is: a
+// reader changed one member of one row and said nothing whatever about the others.
+// Stating it as a Replace would mean holding the whole record to state it with, and
+// a reader that has drawn five columns of a forty-member record has not got one.
+//
+// Three things follow from it being partial, and they are the reason it is worth
+// having rather than a convenience:
+//
+//   - **It cannot move the record.** The child applies the filter and the sort and
+//     places the record; this touches what the record HOLDS afterwards. So a row
+//     stays where it was until something asks the question again -- which is what a
+//     reader editing a cell wants, the row not leaping away under the cursor.
+//   - **It cannot change how many there are.** The child counted it and still does.
+//   - **It means nothing for a key the child does not send.** There is no record to
+//     alter, so nothing goes out. That is the opposite of Replace, which stands on
+//     its own, and it is why an alteration is not a way to add anything.
+//
+// **Altering accumulates.** Two edits to two columns of one row are two calls, and
+// the second must not lose the first -- so the members are merged into whatever is
+// held: into an alteration, into a replacement's or an addition's own fields (both
+// being records entire, a member of one is well defined), and into nothing at all
+// for a key that was deleted, the record being gone.
+func (a *AmendedSource) Alter(key *Value, members Record) {
+	if key == nil || len(members) == 0 {
+		return
+	}
+	a.mu.Lock()
+	am := a.amend[Key(key)]
+	switch {
+	case am == nil:
+		a.amend[Key(key)] = &amendment{key: key, fields: members, altered: true}
+	case am.deleted:
+		// Gone is gone. Altering a record that is not there says nothing, and
+		// resurrecting it under some of its members would invent the rest.
+		a.mu.Unlock()
+		return
+	default:
+		am.fields = overlay(am.fields, members)
+	}
+	// **The generation is bumped only where the arrangement could have changed.**
+	// An alteration is not in the arrangement at all -- see buildAmendOrder -- so a
+	// held order is still right, and re-arranging every sequence on every keystroke
+	// would be paying for nothing. Amending a record that IS arranged moves it, so
+	// that case pays.
+	if am != nil {
+		a.gen++
+	}
+	a.mu.Unlock()
+	if am != nil {
+		a.notes.ranksGone()
+	}
+}
+
+// overlay is a record with some of its members written over, and the rest as they
+// were. A member the original has not got is appended, because altering a field a
+// record lacks is how a field gets added to it.
+func overlay(over, with Record) Record {
+	out := make(Record, len(over), len(over)+len(with))
+	copy(out, over)
+	for _, m := range with {
+		replaced := false
+		for i, had := range out {
+			if had.Name == m.Name {
+				out[i], replaced = m, true
+				break
+			}
+		}
+		if !replaced {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // Add says this source holds a record of its own under this key.
@@ -157,6 +241,79 @@ func (a *AmendedSource) Delete(key *Value, known Record) {
 	a.gen++
 	a.mu.Unlock()
 	a.notes.ranksGone()
+}
+
+// An Amendment is one statement this source holds, as a caller reads it back.
+//
+// A copy, so that amending afterwards does not change one already handed out.
+type Amendment struct {
+	// Key is the record this is about.
+	Key *Value
+
+	// How is which of the four things has been said about it, in the same words a
+	// source uses to ANNOUNCE one: Added, Removed, Replaced, Altered.
+	//
+	// **They are the same four facts, so they are the same four words.** A
+	// `Change` is one of them told to a reader; an amendment is one of them held
+	// against a child. Giving the held version four words of its own would mean
+	// two vocabularies for one idea, and a reader turning `Delete` into "removed"
+	// by hand.
+	How Change
+
+	// Fields is the record entire for Replaced and Added, the members that change
+	// for Altered, and nil for Removed -- the record being gone, there is nothing
+	// of it to state.
+	Fields Record
+
+	// Clashed marks an addition whose key turned out to be the child's after all.
+	// The child's record stands and this one no longer goes out, so it is here to
+	// be seen and dealt with rather than written out as though it were in force.
+	Clashed bool
+}
+
+// Amendments is every statement this source holds.
+//
+// **It is here because an amendment is meant to outlive the session that made
+// it.** A reader edits a cell, the edit is held here, and somebody eventually has
+// to write it to a file or a database -- which is impossible if the only way to
+// see one is to read the records back and diff them against a child that has
+// meanwhile moved on. So what is held can be asked for.
+//
+// Ordered by key, which is not the order they were made in and is deliberately
+// not: the map holds one statement per key, so the making order has already been
+// collapsed, and reporting some order would suggest a history that is not kept. A
+// stable one is what a caller writing a file wants.
+func (a *AmendedSource) Amendments() []Amendment {
+	a.mu.Lock()
+	out := make([]Amendment, 0, len(a.amend))
+	for _, am := range a.amend {
+		out = append(out, Amendment{
+			Key:     am.key,
+			How:     am.how(),
+			Fields:  am.fields,
+			Clashed: am.clashed,
+		})
+	}
+	a.mu.Unlock()
+	sort.Slice(out, func(i, j int) bool { return Key(out[i].Key) < Key(out[j].Key) })
+	return out
+}
+
+// Amended reports whether anything is held at all, for a caller asking whether
+// there is anything to save.
+func (a *AmendedSource) Amended() bool { return a.amends() }
+
+// how is which of the four this amendment is.
+func (a *amendment) how() Change {
+	switch {
+	case a.deleted:
+		return Removed
+	case a.altered:
+		return Altered
+	case a.added:
+		return Added
+	}
+	return Replaced
 }
 
 // Forget drops an amendment, leaving the child's own record to stand.
@@ -346,6 +503,10 @@ func (s *amendedSet) RecordCount() RecordCount {
 		switch {
 		case am.clashed:
 			// The child's record stands, and the child has counted it.
+		case am.altered:
+			// The child's record stands, wearing our members. It is the same
+			// record in the same place, so the child's figure is still the
+			// figure -- which is the whole of what makes an alteration cheap.
 		case am.added:
 			if Match(am.key, am.fields, f) {
 				n = n.Add(1)
@@ -603,25 +764,33 @@ func (m *merge) theirs(key *Value, fields Record, has Totals, whole bool) error 
 			m.set.src.learn(key, fields)
 			return nil
 		}
-		if !am.added {
+		if am.altered {
+			// **Theirs goes out, wearing our members.** An alteration is not a
+			// record of ours standing in the child's place -- it is a correction
+			// applied to the child's on the way past, which is why nothing is
+			// shadowed, nothing is placed and the record keeps the position the
+			// child gave it.
+			fields = overlay(fields, am.fields)
+		} else if !am.added {
 			// A replacement: ours stands in its place. Theirs is shadowed on
 			// the way past, because whether ours makes the sequence longer,
 			// shorter or neither is a question about both of them.
 			m.set.src.learn(key, fields)
 			return nil
-		}
-		// An addition whose key is the child's after all. The child's record
-		// is the one that stands, and this is the only moment that can be
-		// found out -- so it is written down, and every scope after this one
-		// has ours out and the child's in.
-		m.set.src.clash(key)
-		m.drop(am)
-		if m.gone[Key(key)] {
-			// Ours has already gone out in this scope. Sending the child's now
-			// would hand one identity to the asker twice, which is worse than
-			// either record winning, so this scope keeps ours and the next one
-			// -- and every one after it -- has the child's.
-			return nil
+		} else {
+			// An addition whose key is the child's after all. The child's record
+			// is the one that stands, and this is the only moment that can be
+			// found out -- so it is written down, and every scope after this one
+			// has ours out and the child's in.
+			m.set.src.clash(key)
+			m.drop(am)
+			if m.gone[Key(key)] {
+				// Ours has already gone out in this scope. Sending the child's now
+				// would hand one identity to the asker twice, which is worse than
+				// either record winning, so this scope keeps ours and the next one
+				// -- and every one after it -- has the child's.
+				return nil
+			}
 		}
 	}
 	m.flushBefore(recordTuple(key, fields, m.set.spec.Sort))
