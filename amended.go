@@ -299,6 +299,28 @@ func (a *AmendedSource) Amendments() []Amendment {
 	return out
 }
 
+// Amendment is what is held against ONE key, and false where nothing is.
+//
+// The per-key form of Amendments, for a reader that has a record in hand and wants
+// to know whether this source has anything to say about it. A caller with a
+// flattening taken before an amendment was made is reading a snapshot that predates
+// it, and this is how the snapshot is corrected without asking the whole sequence
+// again -- the amendment being the authority over anything older than itself.
+func (a *AmendedSource) Amendment(key *Value) (Amendment, bool) {
+	if key == nil {
+		return Amendment{}, false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	am := a.amend[Key(key)]
+	if am == nil {
+		return Amendment{}, false
+	}
+	return Amendment{
+		Key: am.key, How: am.how(), Fields: am.fields, Clashed: am.clashed,
+	}, true
+}
+
 // Amended reports whether anything is held at all, for a caller asking whether
 // there is anything to save.
 func (a *AmendedSource) Amended() bool { return a.amends() }
