@@ -46,7 +46,7 @@ import (
 	"sync"
 )
 
-// TreeFields names the three things a tree ADDS to every row.
+// TreeFields names the things a tree ADDS to every row.
 //
 // They are the caller's to change because they shadow: a tree over filesystem
 // records whose own field is called `path` would otherwise lose it, and the
@@ -57,6 +57,26 @@ type TreeFields struct {
 	Path       string // where it stands, empty where the standing builds no path
 	Expandable string // how many children: a number, or a floor, or undefined
 	State      string // `closed`, `open` or `openAll`, as a symbol
+
+	// Chain is the mark segments from the root down to this row, as a list of
+	// positional members -- the walk's own `mine`, written down.
+	//
+	// **It is what lets a reader hold a WINDOW of a tree and still open a row in
+	// it.** Expanding is `Marks.Open(chain...)`, and a reader that holds the whole
+	// pre-order can spell the chain for itself: the ancestors of any row precede
+	// it, so walking back up the rows it has is enough. A reader holding rows
+	// forty to eighty cannot -- the ancestors are above forty, which is exactly
+	// what it declined to hold -- so it would have to fetch what it windowed away
+	// in order to click on what it has.
+	//
+	// `Path` is this same fact for a level with a Standing, and is empty for the
+	// two commonest trees: a source that is its own adjacency list, and a flat
+	// source read as one generation. Neither configures a standing, so neither has
+	// a path, and both still have to be clickable.
+	//
+	// The descent holds the chain already, a segment appended per level, so the
+	// row costs one list and nothing is walked to find it.
+	Chain string
 
 	// Kind is the NAME of the node type this row is, as a symbol, and empty for
 	// the default kind.
@@ -76,6 +96,7 @@ var TreeFieldsDefault = TreeFields{
 	Expandable: "expandable",
 	State:      "state",
 	Kind:       "kind",
+	Chain:      "chain",
 }
 
 func (f TreeFields) orElse(d TreeFields) TreeFields {
@@ -93,6 +114,9 @@ func (f TreeFields) orElse(d TreeFields) TreeFields {
 	}
 	if f.Kind == "" {
 		f.Kind = d.Kind
+	}
+	if f.Chain == "" {
+		f.Chain = d.Chain
 	}
 	return f
 }
@@ -686,7 +710,7 @@ func (v *treeDataSet) Read(s *Scope, out Sink) error {
 	}
 
 	v.mu.Lock()
-	rows, at, buildErr := v.rows, v.at, v.err
+	rows, at, buildErr, whole := v.rows, v.at, v.err, v.whole
 	v.mu.Unlock()
 
 	if at == nil {
@@ -732,7 +756,17 @@ func (v *treeDataSet) Read(s *Scope, out Sink) error {
 	}
 
 	out.Ordered()
-	done := Complete{Total: Exactly(len(rows))}
+	// **How long the sequence is, and whether that is a count or a floor.** The
+	// walk stops where its budget ran out, so the rows it holds are all there are
+	// only where it ran out of TREE first -- and a reader told forty exactly, out of
+	// a hundred thousand, draws a true thumb it has not earned and cannot scroll
+	// past the fortieth row. It is the same distinction RecordCount makes, said to
+	// the reader that asked rather than only to one that asks separately.
+	total := AtLeast(len(rows))
+	if whole {
+		total = Exactly(len(rows))
+	}
+	done := Complete{Total: total}
 	last := s.After
 	sent := 0
 	for ; i >= 0 && i < len(rows); i += step {
@@ -897,7 +931,7 @@ func (d *descent) level(kind string, src Source, descriptor *DataSetDescriptor, 
 		for _, name := range next {
 			children = children.And(d.reach(d.tree.opt.Types.Get(name), node, looped))
 		}
-		d.emit(node, kind, depth, d.tree.mark.Mark(mine...), children)
+		d.emit(node, kind, depth, d.tree.mark.Mark(mine...), children, mine)
 
 		if looped || children.Exact && children.N == 0 {
 			continue
@@ -1078,21 +1112,28 @@ func (d *descent) under(nt *NodeType) Source {
 //
 // The tree's WIN on a collision, because a view cannot draw without them -- and
 // that is why their names are the caller's to move.
-func (d *descent) emit(of Node, kind string, depth int, state Mark, children RecordCount) {
+func (d *descent) emit(of Node, kind string, depth int, state Mark, children RecordCount,
+	chain []string) {
+
 	f := d.tree.opt.Fields
-	out := make(Record, 0, len(of.Fields)+5)
+	out := make(Record, 0, len(of.Fields)+6)
 	for _, m := range of.Fields {
 		switch m.Name {
-		case f.Depth, f.Path, f.Expandable, f.State, f.Kind:
+		case f.Depth, f.Path, f.Expandable, f.State, f.Kind, f.Chain:
 		default:
 			out = append(out, m)
 		}
+	}
+	segs := make(Record, len(chain))
+	for i, seg := range chain {
+		segs[i] = At(seg)
 	}
 	out = append(out,
 		Named(f.Depth, depth),
 		Named(f.Path, of.Path),
 		Named(f.State, NewSymbol(state.String())),
-		Named(f.Kind, NewSymbol(kind)))
+		Named(f.Kind, NewSymbol(kind)),
+		Named(f.Chain, NewList(segs)))
 	if children.Exact || children.N > 0 {
 		out = append(out, Named(f.Expandable, int(children.N)))
 	} else {
