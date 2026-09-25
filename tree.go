@@ -498,6 +498,20 @@ type treeDataSet struct {
 	// again while the first is still being answered.
 	walking bool
 
+	// topCount is how many rows the TOP LEVEL holds, and counts is one census per
+	// node type, both as the last walk found them.
+	//
+	// **Both are free.** The walk opens the top level anyway, so counting it there
+	// costs one question the set was already open for; the censuses it took are
+	// thrown away at the end of a walk and are kept instead. They are what lets
+	// `reckon` work out how long the flattening is without walking it, which is the
+	// difference between a true thumb and a floor.
+	//
+	// They go stale when the DATA changes, and a source saying so is what rebuilds
+	// the walk and refreshes them -- invalidation being told rather than decided.
+	topCount RecordCount
+	counts   map[*NodeType]*Census
+
 	// budget is how many rows the last walk was asked for, and `whole` says it ran
 	// out of TREE before it ran out of budget -- so what is held is the lot.
 	//
@@ -557,14 +571,23 @@ func (v *treeDataSet) Close() {
 // every reader of a tree did before there was another way to ask.
 func (v *treeDataSet) RecordCount() RecordCount {
 	v.mu.Lock()
-	defer v.mu.Unlock()
-	if v.at == nil {
-		return Unknown() // closed
+	closed, whole, held := v.at == nil, v.whole, len(v.rows)
+	v.mu.Unlock()
+
+	switch {
+	case closed:
+		return Unknown()
+	case whole:
+		// The walk ran out of tree, so what it holds IS the sequence. Nothing
+		// beats having seen the end of it.
+		return Exactly(held)
 	}
-	if v.whole {
-		return Exactly(len(v.rows))
-	}
-	return AtLeast(len(v.rows))
+	// **A walk that stopped short can still be counted, and usually can.** See
+	// reckon: the top level counts itself and every open node adds its children, so
+	// a flattening nobody has walked to the end of still has a length wherever no
+	// expand-all is in force -- and where one is, a floor of at least the top level
+	// rather than of the rows on screen.
+	return v.reckon(held)
 }
 
 // reach flattens far enough to answer this scope, where it is not far enough
@@ -686,6 +709,10 @@ func (v *treeDataSet) walk() error {
 	// is what makes the count exact rather than a floor.
 	v.whole = !d.enough()
 	v.rows = d.rows
+	// What the walk learned on the way, which `reckon` needs and which no separate
+	// question has to be asked for. Both go stale when the DATA changes, and a
+	// source saying so is what brings the walk round again.
+	v.topCount, v.counts = d.topCount, d.counts
 	v.at = make(map[string]int, len(d.rows))
 	for i, r := range d.rows {
 		v.at[Key(r.id)] = i
@@ -760,13 +787,13 @@ func (v *treeDataSet) Read(s *Scope, out Sink) error {
 	// walk stops where its budget ran out, so the rows it holds are all there are
 	// only where it ran out of TREE first -- and a reader told forty exactly, out of
 	// a hundred thousand, draws a true thumb it has not earned and cannot scroll
-	// past the fortieth row. It is the same distinction RecordCount makes, said to
-	// the reader that asked rather than only to one that asks separately.
-	total := AtLeast(len(rows))
-	if whole {
-		total = Exactly(len(rows))
-	}
-	done := Complete{Total: total}
+	// past the fortieth row.
+	//
+	// It is RecordCount's own answer and not a second arithmetic, because the two
+	// are one claim about one walk and a reader that asked cannot be told something
+	// different from a reader that asks separately.
+	_ = whole
+	done := Complete{Total: v.RecordCount()}
 	last := s.After
 	sent := 0
 	for ; i >= 0 && i < len(rows); i += step {
@@ -826,6 +853,11 @@ type descent struct {
 	// and kept for the rest of this build. A nil value means it was tried and
 	// could not be had.
 	counts map[*NodeType]*Census
+
+	// topCount is how many rows the top level holds, taken off the set the walk
+	// opened for it. **Free**, that set being open either way, and it is half of
+	// what `reckon` needs to say how long the flattening is without walking it.
+	topCount RecordCount
 }
 
 // a standingAt is one node on the path from the root, for the revisit budget.
@@ -881,6 +913,10 @@ func (d *descent) level(kind string, src Source, descriptor *DataSetDescriptor, 
 	// and this is the same three lines it always was. One across a connection has
 	// only sent a question -- and closing before the answer came hung up on it,
 	// which is a question asked and deliberately not listened for.
+	if depth == 0 {
+		// The top level, counted while its set is open. See descent.topCount.
+		d.topCount = CountOf(set)
+	}
 	got := newLevelRows()
 	err = set.Read(&Scope{Count: d.ask()}, got)
 	if err == nil {

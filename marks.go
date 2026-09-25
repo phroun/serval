@@ -256,6 +256,49 @@ func heldBy(at *marker) int {
 	return n
 }
 
+// Showing calls back for every node whose children are VISIBLE, with the chain
+// down to it and the state it is in.
+//
+// **Only the ones actually reachable.** A mark is an exception to what it inherits,
+// so a node marked Open inside a Closed parent does not show and neither does
+// anything beneath it -- and yielding it would describe a subtree nobody can see. So
+// the descent here is the shape the row descent has: into a node's children only
+// where that node shows.
+//
+// The root is not yielded. Its children are the top level, which a sequence has
+// whether or not anything is marked; a caller that wants the root's own state asks
+// `Mark()` with no segments.
+//
+// It is for working out how LONG a flattening is without walking it: the top level
+// counts itself, and every node that shows adds its children. What makes that worth
+// having is the second rule up at the top of this file -- what is held is bounded by
+// what somebody has touched, so this walks a handful of nodes and not a tree.
+func (m *Marks) Showing(tell func(chain []string, state Mark)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.showing(&m.root, m.rootState(), nil, tell)
+}
+
+func (m *Marks) showing(at *marker, state Mark, chain []string,
+	tell func([]string, Mark)) {
+
+	if !state.shows() {
+		return
+	}
+	given := state.given()
+	for seg, kid := range at.kids {
+		here := given
+		if kid.set {
+			here = kid.mark
+		}
+		mine := append(append([]string{}, chain...), seg)
+		if here.shows() {
+			tell(mine, here)
+		}
+		m.showing(kid, here, mine, tell)
+	}
+}
+
 // dig walks to a node, making the markers it passes through. Unlike walk it
 // cannot fail, a mark being settable on a node nothing has touched yet.
 func (m *Marks) dig(chain []string) (at *marker, given Mark) {
