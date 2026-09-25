@@ -1042,7 +1042,13 @@ func laps(seen []standingAt, at standingAt) int {
 // where a DESCENDANT matches -- is a claim about everything beneath and cannot
 // be made without looking, so it is eager by nature and is not here.
 func (d *descent) withShallow(descriptor *DataSetDescriptor) *DataSetDescriptor {
-	if d.set.shallow == nil {
+	return d.set.withShallow(descriptor)
+}
+
+// withShallow is the same, asked of the sequence rather than of a walk in progress --
+// which is what `reckon` needs, there being no walk when it asks.
+func (v *treeDataSet) withShallow(descriptor *DataSetDescriptor) *DataSetDescriptor {
+	if v.shallow == nil {
 		if descriptor == nil {
 			return &DataSetDescriptor{}
 		}
@@ -1053,9 +1059,9 @@ func (d *descent) withShallow(descriptor *DataSetDescriptor) *DataSetDescriptor 
 		out = *descriptor
 	}
 	if out.Filter == nil {
-		out.Filter = d.set.shallow
+		out.Filter = v.shallow
 	} else {
-		out.Filter = &Filter{Op: OpAnd, Children: []*Filter{out.Filter, d.set.shallow}}
+		out.Filter = &Filter{Op: OpAnd, Children: []*Filter{out.Filter, v.shallow}}
 	}
 	return &out
 }

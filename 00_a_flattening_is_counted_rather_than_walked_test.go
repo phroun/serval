@@ -533,3 +533,117 @@ func wideTop(n int) *ListSource {
 	}
 	return NewListSource(rows)
 }
+
+// **A sequence that becomes countable AFTER the last walk is picked up.**
+//
+// The walk records the top level's figure for free, and that is usually enough. It is
+// not enough for a source across a connection: one cannot count until an answer has
+// told it how many there are, and by the time one has, the window is held and no walk
+// happens to pick the figure up. A flattening that became countable would go on being
+// floored until somebody expanded something.
+func TestACountThatArrivesLateIsPickedUp(t *testing.T) {
+	late := &countsLate{ListSource: kin()}
+	src := treeOf(t, TreeOptions{Source: late, Descriptor: &DataSetDescriptor{}})
+	set, err := src.Open(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer set.Close()
+
+	// While it will not count, a floor -- and the floor is the rows held, there being
+	// no top level figure to better it with.
+	var out treeTook
+	if err := set.Read(&Scope{Count: 1}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.done.Total; got.Exact {
+		t.Fatalf("before it would count it says %v, want a floor", got)
+	}
+
+	// Then it can, and nothing walks again: the window is held, so the read below
+	// answers out of what the first one flattened.
+	late.answer = true
+	var again treeTook
+	if err := set.Read(&Scope{Count: 1}, &again); err != nil {
+		t.Fatal(err)
+	}
+	if got := again.done.Total; got != Exactly(5) {
+		t.Errorf("once it counts it says %v, want exactly the five records", got)
+	}
+}
+
+// countsLate is a source whose sets will not count until it is told to -- which is
+// every source that has to be ASKED, before the first answer comes back.
+type countsLate struct {
+	*ListSource
+	answer bool
+}
+
+func (c *countsLate) Open(descriptor *DataSetDescriptor) (DataSet, error) {
+	set, err := c.ListSource.Open(descriptor)
+	if err != nil {
+		return nil, err
+	}
+	return lateSet{DataSet: set, src: c}, nil
+}
+
+type lateSet struct {
+	DataSet
+	src *countsLate
+}
+
+func (s lateSet) RecordCount() RecordCount {
+	if !s.src.answer {
+		return Unknown()
+	}
+	return CountOf(s.DataSet)
+}
+
+// And it asks about the sequence the WALK stated, its own descriptor and the shallow
+// filter and all.
+//
+// A count is remembered against the sequence it was told about, so asking a
+// differently-stated one asks something nothing has heard -- and the figure that comes
+// back is about rows the tree would not draw. Here the tree's own descriptor keeps the
+// top level to the rows with no parent, which is two of five.
+func TestALateCountIsAskedOfTheSequenceTheWalkStated(t *testing.T) {
+	// It will not count while the walk runs, so the walk records nothing and the ask
+	// below is what has to get it right. With the figure already in hand the walk
+	// takes it and this asks nothing at all.
+	late := &countsLate{ListSource: kin()}
+	src := treeOf(t, TreeOptions{Source: late})
+
+	// And a shallow filter on top, which goes on the sequence and is asked of every
+	// level.
+	set, err := src.Open(&DataSetDescriptor{Filter: &Filter{
+		Op: OpNot, Children: []*Filter{{
+			Op: OpEq, Field: "name", Values: []*Value{NewText("alpha")},
+		}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer set.Close()
+
+	var out treeTook
+	if err := set.Read(&Scope{Count: 1}, &out); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.done.Total; got.Exact {
+		t.Fatalf("before it would count it says %v, want a floor", got)
+	}
+
+	late.answer = true
+	var again treeTook
+	if err := set.Read(&Scope{Count: 1}, &again); err != nil {
+		t.Fatal(err)
+	}
+	// One: the tree's own descriptor keeps the rows with no parent, and the shallow
+	// filter takes one of those two away. Either half dropped gives a different figure.
+	if got := again.done.Total; got != Exactly(1) {
+		t.Errorf("it says %v, want exactly the one row left standing at the top", got)
+	}
+	if got := drawn(t, set, &Scope{Count: 10}); got != "gamma/0" {
+		t.Fatalf("the tree reads %q, so the figure above is not the point", got)
+	}
+}

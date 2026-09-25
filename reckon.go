@@ -63,6 +63,9 @@ func (v *treeDataSet) reckon(held int) RecordCount {
 	v.mu.Lock()
 	top, counts := v.topCount, v.counts
 	v.mu.Unlock()
+	if !top.Exact {
+		top = v.askTop()
+	}
 
 	// The floor, before anything else: the rows the walk emitted, or the top level
 	// where that is more -- every one of its rows being in the flattening.
@@ -120,6 +123,47 @@ func (v *treeDataSet) reckon(held int) RecordCount {
 		}
 	}
 	return exactlyOr(total, floor)
+}
+
+// askTop asks the top level how many rows it has, where the walk did not find out.
+//
+// **The walk records it for free and that is usually enough, but not always.** A
+// source across a connection cannot count until an answer has told it how many there
+// are -- and by the time one has, the window is held and no walk happens to pick the
+// figure up. So a sequence that became countable after the last walk would go on
+// being floored for as long as nobody expanded anything.
+//
+// It asks only while the figure is NOT known, and files it when it arrives, so a
+// source that counts is asked once and one that never will costs an Open and a Close
+// -- no read, no records, and nothing on a wire. `Stale` brings the walk round again
+// and refreshes it when the data changes, which is what keeps this from being a
+// figure nobody revisits.
+//
+// The descriptor is the one the WALK used, sort and shallow filter and all. It has to
+// be: a cache remembers a count against the sequence it was told about, and asking
+// about a differently-stated sequence is asking something the cache has never heard.
+func (v *treeDataSet) askTop() RecordCount {
+	opt := v.tree.opt
+	if opt.Source == nil {
+		return Unknown()
+	}
+	set, err := opt.Source.Open(v.tree.sortFor("", v.withShallow(opt.Descriptor)))
+	if err != nil {
+		return Unknown()
+	}
+	got := CountOf(set)
+	set.Close()
+
+	// One guard and not two: filing it only where it says more is the same test a
+	// second `got` against `had` would be, and the stored figure is the better of the
+	// two either way.
+	v.mu.Lock()
+	if says(got, v.topCount) {
+		v.topCount = got
+	}
+	best := v.topCount
+	v.mu.Unlock()
+	return best
 }
 
 // exactlyOr is the reckoning, unless it contradicts the floor -- which is evidence:
