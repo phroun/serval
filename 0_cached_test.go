@@ -941,3 +941,87 @@ func TestAPlaceLeavesOutWhatTheQueryExcluded(t *testing.T) {
 		t.Errorf("the place carries %s, and .name was asked against", got)
 	}
 }
+
+// **A run with no bound reaches the end of the sequence, and an answer that stopped
+// short has not earned one.**
+//
+// A missing watermark means the answer ran out of records: it has nowhere to point
+// at. So an answer that stopped for any other reason and named no watermark was filed
+// as reaching the end -- and a run bounded at neither end is read as the whole
+// sequence in one piece.
+//
+// The cost is quiet and large. A source of a thousand rows answering a window of
+// three, saying `filled` and naming no watermark, was counted as a sequence of
+// three -- so every reader drew a true thumb against a figure wrong by a factor of
+// three hundred.
+func TestAnAnswerThatStoppedShortIsNotTheWholeSequence(t *testing.T) {
+	ownCache(t, 64, 4096)
+
+	body := &quietStopper{n: 1000}
+	src := NewCachedSource(body)
+	set, err := src.Open(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer set.Close()
+
+	var got collector
+	if err := set.Read(&Scope{Count: 3}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.keys) != 3 {
+		t.Fatalf("the window holds %d rows", len(got.keys))
+	}
+	if n := CountOf(set); n.Exact {
+		t.Errorf("after a window of three of a thousand it counts %v exactly; the"+
+			" answer said it had stopped short and named no watermark", n)
+	}
+
+	// And the run is still USABLE: the three rows are held, so asking for them again
+	// does not reach the source.
+	was := body.reads
+	var again collector
+	if err := set.Read(&Scope{Count: 3}, &again); err != nil {
+		t.Fatal(err)
+	}
+	if body.reads != was {
+		t.Errorf("the window was asked for again: %d reads became %d", was, body.reads)
+	}
+	if len(again.keys) != 3 {
+		t.Errorf("reading it again holds %d rows", len(again.keys))
+	}
+}
+
+// quietStopper answers a window and says it stopped short WITHOUT saying where --
+// which an application may do, and which says less than it could rather than more.
+type quietStopper struct {
+	n     int
+	reads int
+}
+
+func (q *quietStopper) Open(*DataSetDescriptor) (DataSet, error) {
+	return &quietStopperSet{src: q}, nil
+}
+
+type quietStopperSet struct{ src *quietStopper }
+
+func (s *quietStopperSet) Close() {}
+
+func (s *quietStopperSet) Read(sc *Scope, out Sink) error {
+	s.src.reads++
+	out.Ordered()
+	sent := 0
+	for i := 0; i < s.src.n; i++ {
+		if sc != nil && sc.Count > 0 && sent >= sc.Count {
+			// Stopped short, and saying nothing about where.
+			out.Done(Complete{Stop: StopFilled})
+			return nil
+		}
+		if err := out.Record(NewInt(int64(i)), Record{Named("name", fmt.Sprint(i))}); err != nil {
+			return err
+		}
+		sent++
+	}
+	out.Done(Complete{Stop: StopExhausted})
+	return nil
+}

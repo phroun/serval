@@ -472,14 +472,35 @@ func (c *cache) hold(ds dataSet, sc *Scope, recs []*cachedRecord, done Complete)
 		twice[k] = true
 	}
 
+	// **A run with no bound on it reaches the end of the sequence**, which is what a
+	// missing watermark means: an answer that ran out of records has nowhere to point
+	// at. So an answer that stopped for any OTHER reason and named no watermark would
+	// be filed as reaching the end -- and `recordCount` reads a run bounded at
+	// neither end as the whole sequence in one piece.
+	//
+	// It is not a claim the answer made. An application that stops because the scope
+	// was filled and does not say where has said LESS than it could, not more, and the
+	// run has an end whatever it says: the last record that came. The records are in
+	// hand and in order, so the bound is there to be read off them rather than
+	// guessed.
+	//
+	// The cost of getting this wrong is quiet and large. A source of a hundred
+	// thousand rows answering a window of eighty-eight, saying `filled` and naming no
+	// watermark, was counted as a sequence of eighty-eight -- so every reader of it
+	// drew a true thumb over a figure that was wrong by three orders of magnitude.
+	edge := done.Watermark
+	if edge == nil && bounded(done.Stop) {
+		edge = recs[len(recs)-1].id
+	}
+
 	run := &cachedScope{set: ds.set}
 	if sc.Reversed {
-		run.begin, run.end = done.Watermark, sc.After
+		run.begin, run.end = edge, sc.After
 		for _, r := range recs {
 			run.pushFront(newEntry(r.id))
 		}
 	} else {
-		run.begin, run.end = sc.After, done.Watermark
+		run.begin, run.end = sc.After, edge
 		for _, r := range recs {
 			run.pushBack(newEntry(r.id))
 		}
@@ -607,6 +628,14 @@ func (c *cache) recordCount(ds dataSet) RecordCount {
 	}
 	return AtLeast(held)
 }
+
+// bounded reports whether an answer stopped somewhere short of the end of the
+// sequence -- so that a run of it cannot be one that reaches the end.
+//
+// An empty Stop is read as exhausted, that being the convention everywhere else: a
+// reader of a sequence held in this process is answered with no stop at all where
+// the answer simply ran out.
+func bounded(stop Stop) bool { return stop != "" && stop != StopExhausted }
 
 // learnCount files what a source said, where that says more than is held.
 //
