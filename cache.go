@@ -79,6 +79,40 @@ package serval
 // rather than what is held) is the stronger answer, and is what to reach for if
 // measurement says these two are not enough. It is deliberately not here yet.
 //
+// # What a view is looking at is not promoted, and that is right
+//
+// Promotion takes THREE reads and not two: the first is the miss, which files
+// the run and forwards the source's own answer without the cache serving
+// anything, so the second read is the first hand-out and the third is the one
+// that warms. A view settled on a screenful reads it once. Nothing it is
+// holding can therefore reach the protected segment, and it was worth asking
+// whether that is a gap.
+//
+// It is not. **A view holds what it draws** -- the records, not just their
+// places -- so while it is looking at a stretch, this cache's copy of those
+// records is a second copy of something already in hand. Protecting it would
+// buy nothing for the frame being drawn, and would spend protected room, which
+// is capped, on a guess.
+//
+// And it would be a guess. Promotion is EVIDENCE, and a view looking at
+// something is not evidence about what will be asked for again. The demand a
+// protected copy would serve is a RE-ask -- a reader scrolling back over ground
+// it let go of, a second view over the same data set, a walk repeated after a
+// mark moved -- and a second hand-out is exactly that event, observed rather
+// than predicted. There is nothing to infer from the first read that this is
+// not already waiting to be told.
+//
+// It also reads worse than it is, because **probation is not eviction**. A
+// probationary place serves every read perfectly well; it is only the first
+// place eviction takes from, and only when something else needs the room. So
+// the scroll-away-and-back case is answered from here anyway unless something
+// is actively crowding it out -- and anything crowding it out has proved more
+// than a stretch nobody has asked for twice.
+//
+// The question that survives is narrower and unobserved: a flood evicting
+// probationary places a view WOULD have asked for again. That is the shape
+// TinyLFU is for, and nothing has measured it happening.
+//
 // # What decides that something held is wrong
 //
 // Nothing here does. A source SAYS so, and invalidate.go is what saying so
