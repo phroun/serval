@@ -8,7 +8,7 @@ package serval
 // becomes a FLOOR, because rows the walk never reached are rows it cannot count.
 // And a row's ancestry stops being derivable, because the trick that derives it
 // -- pre-order puts every ancestor above its descendant -- only works for a
-// reader that kept everything above. A window of rows forty to eighty kept none
+// reader that kept everything above. An Extent of rows forty to eighty kept none
 // of it, and clicking a twisty is `Marks.Open(chain...)`.
 
 import (
@@ -53,7 +53,7 @@ func segments(f Record, under string) []string {
 // reader that ASKED -- `Complete.Total` came back exact whatever the walk had
 // seen, so a view believing the answer it was handed would put the last row of a
 // hundred thousand at position four and refuse to scroll past it.
-func TestAWindowedReadSaysTheCountIsAFloor(t *testing.T) {
+func TestAExtentReadSaysTheCountIsAFloor(t *testing.T) {
 	src := treeOf(t, TreeOptions{
 		Source: wide(50),
 		Descriptor: &DataSetDescriptor{Filter: &Filter{
@@ -73,7 +73,7 @@ func TestAWindowedReadSaysTheCountIsAFloor(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(out.lines) != 4 {
-		t.Fatalf("the window holds %d rows, want four: %v", len(out.lines), out.lines)
+		t.Fatalf("the Extent holds %d rows, want four: %v", len(out.lines), out.lines)
 	}
 	if got := out.done.Total; got != AtLeast(4) {
 		t.Errorf("it says the sequence holds %v, want at least four", got)
@@ -95,7 +95,7 @@ func TestAWindowedReadSaysTheCountIsAFloor(t *testing.T) {
 }
 
 // **A row carries the mark segments from the root down to it**, which is what
-// makes a window clickable.
+// makes an Extent clickable.
 //
 // The chain is the walk's own: a segment appended per level, so it costs one list
 // per row and nothing is searched for it.
@@ -125,11 +125,11 @@ func TestAFlattenedRowCarriesTheChainTheWalkSpelled(t *testing.T) {
 	}
 }
 
-// And a row read in a window that holds NONE of its ancestors carries the whole
+// And a row read in an Extent that holds NONE of its ancestors carries the whole
 // of it anyway. This is the case the field exists for: everything above is what
 // the reader declined to hold, so deriving the chain would mean fetching back
-// exactly what was windowed away in order to click on what is already there.
-func TestARowKeepsItsChainWhenItsAncestorsAreOutsideTheWindow(t *testing.T) {
+// exactly what was held as an Extent away in order to click on what is already there.
+func TestARowKeepsItsChainWhenItsAncestorsAreOutsideTheExtent(t *testing.T) {
 	src := treeOf(t, TreeOptions{})
 	src.ExpandAll()
 	set, _ := wholeTree(t, src)
@@ -140,11 +140,11 @@ func TestARowKeepsItsChainWhenItsAncestorsAreOutsideTheWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got, want := strings.Join(out.lines, " "), "delta/2"; got != want {
-		t.Fatalf("the window reads %q, want %q", got, want)
+		t.Fatalf("the Extent reads %q, want %q", got, want)
 	}
 	want := strings.Join([]string{Key(NewInt(1)), Key(NewInt(2)), Key(NewInt(4))}, "|")
 	if got := chainOf(out.fields[0], "chain"); got != want {
-		t.Errorf("its chain reads %q, want %q -- neither ancestor is in the window", got, want)
+		t.Errorf("its chain reads %q, want %q -- neither ancestor is in the Extent", got, want)
 	}
 
 	// And the chain is what `Marks` takes, which is the whole point of holding

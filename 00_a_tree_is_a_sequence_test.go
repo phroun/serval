@@ -499,12 +499,12 @@ func TestARevisitBudgetIsClamped(t *testing.T) {
 // children come out of a different source entirely -- which is the thing the
 // whole child-type mechanism exists for.
 func TestARowMayNameAChildTypeInAnotherSource(t *testing.T) {
-	windows := NewListSource([]Row{
-		NewRow(NewInt(90), Record{Named("name", "a window"), Named("app", 1)}),
+	Extents := NewListSource([]Row{
+		NewRow(NewInt(90), Record{Named("name", "an Extent"), Named("app", 1)}),
 		NewRow(NewInt(91), Record{Named("name", "another"), Named("app", 1)}),
 	})
 	apps := NewListSource([]Row{
-		NewRow(NewInt(1), Record{Named("name", "an app"), Named("kind", "windows")}),
+		NewRow(NewInt(1), Record{Named("name", "an app"), Named("kind", "Extents")}),
 		NewRow(NewInt(2), Record{Named("name", "a plain row")}),
 	})
 
@@ -515,7 +515,7 @@ func TestARowMayNameAChildTypeInAnotherSource(t *testing.T) {
 			Field:   "kind",
 			Default: &NodeType{Children: ChildrenByKey("parent")},
 			Named: map[string]*NodeType{
-				"windows": {Source: windows, Children: ChildrenByKey("app")},
+				"Extents": {Source: Extents, Children: ChildrenByKey("app")},
 			},
 		},
 	})
@@ -526,7 +526,7 @@ func TestARowMayNameAChildTypeInAnotherSource(t *testing.T) {
 	set, got := wholeTree(t, src)
 	defer set.Close()
 
-	if want := "an app/0 a window/1 another/1 a plain row/0"; got != want {
+	if want := "an app/0 an Extent/1 another/1 a plain row/0"; got != want {
 		t.Errorf("the grafted tree reads\n  %s\nwant\n  %s", got, want)
 	}
 }
@@ -945,7 +945,7 @@ func TestTheCensusCountsWhatTheLevelWouldShow(t *testing.T) {
 //
 // This is what the rename bought. While a type described somebody's CHILDREN,
 // every host row had to say `applications` and every application row had to say
-// `windows` -- which means the applications source carries the view's vocabulary
+// `Extents` -- which means the applications source carries the view's vocabulary
 // as data. A type describes a KIND OF ROW and says what kind comes next, so the
 // kinds are the tree's own business and the data is left alone.
 func TestAChainOfKindsDeclaresItself(t *testing.T) {
@@ -956,8 +956,8 @@ func TestAChainOfKindsDeclaresItself(t *testing.T) {
 		NewRow(NewInt(10), Record{Named("name", "an app"), Named("host", 1)}),
 		NewRow(NewInt(11), Record{Named("name", "another app"), Named("host", 1)}),
 	})
-	windows := NewListSource([]Row{
-		NewRow(NewInt(100), Record{Named("name", "a window"), Named("app", 10)}),
+	Extents := NewListSource([]Row{
+		NewRow(NewInt(100), Record{Named("name", "an Extent"), Named("app", 10)}),
 	})
 
 	src, err := NewTreeSource(TreeOptions{
@@ -969,9 +969,9 @@ func TestAChainOfKindsDeclaresItself(t *testing.T) {
 				"applications": {
 					Source:   apps,
 					Children: ChildrenByKey("host"),
-					Then:     Always("windows"),
+					Then:     Always("Extents"),
 				},
-				"windows": {Source: windows, Children: ChildrenByKey("app")},
+				"Extents": {Source: Extents, Children: ChildrenByKey("app")},
 			},
 		},
 	})
@@ -982,12 +982,12 @@ func TestAChainOfKindsDeclaresItself(t *testing.T) {
 	set, got := wholeTree(t, src)
 	defer set.Close()
 
-	if want := "a host/0 an app/1 a window/2 another app/1"; got != want {
+	if want := "a host/0 an app/1 an Extent/2 another app/1"; got != want {
 		t.Errorf("the chain reads\n  %s\nwant\n  %s", got, want)
 	}
 
 	// Not one record anywhere names a kind. That is the claim.
-	for _, s := range []*ListSource{hosts, apps, windows} {
+	for _, s := range []*ListSource{hosts, apps, Extents} {
 		set, err := s.Open(&DataSetDescriptor{})
 		if err != nil {
 			t.Fatal(err)

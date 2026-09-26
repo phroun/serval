@@ -29,7 +29,7 @@ package serval
 // **The flattening is eager.** Opening a data set walks every visible row and
 // holds it, which makes the count exact, the positions exact and From honoured
 // exactly -- and which is right for records in hand, the case this serves. A
-// source that must be ASKED wants the window and not the whole, and that is the
+// source that must be ASKED wants the Extent and not the whole, and that is the
 // next piece rather than a different design: the same interface, answered
 // lazily.
 //
@@ -66,7 +66,7 @@ type TreeFields struct {
 	// pre-order can spell the chain for itself: the ancestors of any row precede
 	// it, so walking back up the rows it has is enough. A reader holding rows
 	// forty to eighty cannot -- the ancestors are above forty, which is exactly
-	// what it declined to hold -- so it would have to fetch what it windowed away
+	// what it declined to hold -- so it would have to fetch what it let go
 	// in order to click on what it has.
 	//
 	// `Path` is this same fact for a level with a Standing, and is empty for the
@@ -541,7 +541,7 @@ type treeDataSet struct {
 	// base is where the rows this set holds BEGIN: the flat position of the first
 	// of them, and nought for a walk that started at the top.
 	//
-	// **A flattening is a window now, not a prefix.** A reader a hundred thousand
+	// **A flattening is an Extent now, not a prefix.** A reader a hundred thousand
 	// rows down is answered by a walk that skipped to there, so what is held is a
 	// stretch of the sequence rather than the front of it, and every position here
 	// -- the index, a scope's `from`, the `first` an answer reports -- is the
@@ -571,9 +571,9 @@ type treeDataSet struct {
 	// seen is the furthest this set has ever reached: the position past the last
 	// row any walk of it has produced.
 	//
-	// **A floor must not come down.** What is held is a window now, so a walk
+	// **A floor must not come down.** What is held is an Extent now, so a walk
 	// further down can hold FEWER rows than one before it, and a length taken from
-	// the window alone would shrink as a reader scrolled -- a thumb that grew and
+	// the Extent alone would shrink as a reader scrolled -- a thumb that grew and
 	// then jumped back, and a sequence that lost rows nobody removed. A row seen
 	// once is a row that exists, so the floor is the furthest anybody has been.
 	//
@@ -600,7 +600,7 @@ func (v *treeDataSet) needs(s *Scope) (from, count int) {
 		from = s.From
 	case s.After != nil:
 		// **A row this set does not hold names no position here.** It may be above
-		// the window or below it, and the flattening is the only thing that knows
+		// the Extent or below it, and the flattening is the only thing that knows
 		// which -- so the walk starts again at the top, which is where it can be
 		// found. A reader stepping through what it holds never reaches this.
 		if at, ok := v.at[Key(s.After)]; ok {
@@ -613,7 +613,7 @@ func (v *treeDataSet) needs(s *Scope) (from, count int) {
 	return from, s.Count
 }
 
-// holds reports whether the rows this set has cover the window a scope wants.
+// holds reports whether the rows this set has cover the Extent a scope wants.
 //
 // Called under the lock.
 func (v *treeDataSet) holds(from, count int) bool {
@@ -623,7 +623,7 @@ func (v *treeDataSet) holds(from, count int) bool {
 	if from+count <= v.base+len(v.rows) {
 		return true
 	}
-	// The walk ran out of tree, so there is nothing past what is held: a window
+	// The walk ran out of tree, so there is nothing past what is held: an Extent
 	// reaching beyond the end is answered by the end.
 	return v.whole
 }
@@ -694,7 +694,7 @@ func (v *treeDataSet) reach(s *Scope) error {
 		v.mu.Unlock()
 		return nil
 	}
-	// One already in flight for this window, which will tell when it lands.
+	// One already in flight for this Extent, which will tell when it lands.
 	if v.walking && from >= v.from && from+count <= v.from+v.budget {
 		v.mu.Unlock()
 		return nil
@@ -806,7 +806,7 @@ func (v *treeDataSet) walk() error {
 	// It ran out of TREE before it ran out of budget, so what it holds reaches the
 	// end -- which is what makes the count exact rather than a floor.
 	//
-	// **Where these rows begin.** Every row before the window was passed over, so
+	// **Where these rows begin.** Every row before the Extent was passed over, so
 	// what is left of the skip is what the tree ran out before reaching: a walk that
 	// skipped the lot holds nothing and begins at the end of the sequence.
 	if v.reshaped {
@@ -824,10 +824,10 @@ func (v *treeDataSet) walk() error {
 	// question has to be asked for. Both go stale when the DATA changes, and a
 	// source saying so is what brings the walk round again.
 	v.topCount, v.counts = d.topCount, d.counts
-	// **Where a row stands is remembered past the window that showed it.** A reader
+	// **Where a row stands is remembered past the Extent that showed it.** A reader
 	// asks for what comes after a record it holds, and it holds rows this set has
 	// since slid past -- so an index rebuilt each walk would lose the one row the
-	// question was about and send the walk back to the top, which is the window
+	// question was about and send the walk back to the top, which is the Extent
 	// undone. What it costs is an entry per row anybody has actually been shown:
 	// a reader that jumped to row ninety-nine thousand was shown ten of them.
 	//
@@ -844,9 +844,9 @@ func (v *treeDataSet) walk() error {
 
 // join puts a walk's rows together with what this set already held.
 //
-// **Two readers of one sequence are not one reader.** A view asks about the rows on
-// screen and, a moment later, about a row somebody dragged a thumb to -- and a
-// window that simply REPLACED what was held would answer each by throwing away the
+// **Two readers of one data set are not one reader.** A view asks about the rows on
+// screen and, a moment later, about a row somebody dragged a thumb to -- and a data
+// range that simply REPLACED what was held would answer each by throwing away the
 // other's, so the two asks walk over each other for ever and neither is ever there
 // when it is looked for. That is not a hypothetical: it is a list that will not
 // scroll.
@@ -889,7 +889,7 @@ func (v *treeDataSet) join(base int, rows []treeRow, whole bool) {
 // this is: the rows are in a slice, in order, so `after` is a map lookup, `from`
 // is honoured exactly, and the count and the first position are both facts.
 func (v *treeDataSet) Read(s *Scope, out Sink) error {
-	// **The scope is what says how far to flatten.** A reader asking for a window
+	// **The scope is what says how far to flatten.** A reader asking for an Extent
 	// needs the pre-order up to the end of it and no further, so that is what the
 	// walk is asked for -- and every level inside it is asked for no more than
 	// that. A reader asking for the whole sequence gets the whole walk, which is
@@ -915,8 +915,8 @@ func (v *treeDataSet) Read(s *Scope, out Sink) error {
 		return nil
 	}
 
-	// Positions here are the SEQUENCE's, and the rows held are a window of it: `i`
-	// walks positions and `i-base` is where to find one. A window that begins at
+	// Positions here are the SEQUENCE's, and the rows held are an Extent of it: `i`
+	// walks positions and `i-base` is where to find one. An Extent that begins at
 	// nought, which is every walk that was not asked to start elsewhere, makes the
 	// two the same number and this reads as it always did.
 	step, i := 1, base
@@ -975,7 +975,7 @@ func (v *treeDataSet) Read(s *Scope, out Sink) error {
 			done.First = Exactly(i)
 		}
 		// Entire, because the flattening read whole records and added to them.
-		// When the window is read lazily instead, this is the line that has to
+		// When the Extent is read lazily instead, this is the line that has to
 		// learn to say Subset.
 		if err := out.Record(rows[i-base].id, rows[i-base].fields); err != nil {
 			return err
@@ -1031,9 +1031,9 @@ type descent struct {
 	// skip is how many rows of the flattening are still to be passed over before
 	// the first one this walk keeps.
 	//
-	// **A window of a tree begins somewhere.** A reader a hundred thousand rows
+	// **An Extent of a tree begins somewhere.** A reader a hundred thousand rows
 	// down does not want the hundred thousand above it, and the walk that produced
-	// them held every one. So the rows before the window are counted rather than
+	// them held every one. So the rows before the Extent are counted rather than
 	// kept -- and where a level can prove each of its rows stands for exactly one
 	// row of the flattening, they are not even read: the skip becomes that level's
 	// `Scope.From` and the source is asked to begin there. See Marks.Flat.
@@ -1262,7 +1262,7 @@ func (d *descent) enough() bool { return d.want > 0 && d.left <= 0 }
 
 // everyRow is the count a level is read with where nobody set a budget. The
 // level is read entire; the number is a ceiling against a source that would
-// otherwise answer forever, not a window.
+// otherwise answer forever, not an Extent.
 const everyRow = 1 << 30
 
 // laps is how many times this node already stands on the path above it.
@@ -1425,7 +1425,7 @@ func (d *descent) emit(of Node, kind string, depth int, state Mark, children Rec
 		out = append(out, Named(f.Expandable, nil))
 	}
 
-	// **Before the window, so counted and not kept.** The row is a row of the
+	// **Before the Extent, so counted and not kept.** The row is a row of the
 	// flattening either way -- that is what makes it a position -- but nobody is
 	// going to look at it, so nothing is held for it.
 	if d.skip > 0 {

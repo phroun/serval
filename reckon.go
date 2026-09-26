@@ -4,10 +4,10 @@ package serval
 //
 // **A tree's length is its walk, and that is the thing this gets round.** A
 // flattening that stopped where its budget ran out knows there may be more and can
-// only floor the figure -- so a reader holding a window of a hundred thousand rows
+// only floor the figure -- so a reader holding an Extent of a hundred thousand rows
 // was told "at least forty", drew a thumb against forty, and could not be dragged
 // past the fortieth row. Learning the real length meant reading down to the end,
-// which is the one thing a window exists not to do.
+// which is the one thing an Extent exists not to do.
 //
 // It never needed the walk. Two facts already in hand say it:
 //
@@ -129,7 +129,7 @@ func (v *treeDataSet) reckon(held int) RecordCount {
 //
 // **The walk records it for free and that is usually enough, but not always.** A
 // source across a connection cannot count until an answer has told it how many there
-// are -- and by the time one has, the window is held and no walk happens to pick the
+// are -- and by the time one has, the Extent is held and no walk happens to pick the
 // figure up. So a sequence that became countable after the last walk would go on
 // being floored for as long as nobody expanded anything.
 //

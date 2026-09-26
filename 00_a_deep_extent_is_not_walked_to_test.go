@@ -80,8 +80,8 @@ func flatTree(t *testing.T, src Source) *TreeSource {
 	return tree
 }
 
-// **A window a long way down costs one question and the rows in it.**
-func TestADeepWindowIsAskedForRatherThanWalkedTo(t *testing.T) {
+// **An Extent a long way down costs one question and the rows in it.**
+func TestADeepExtentIsAskedForRatherThanWalkedTo(t *testing.T) {
 	const rows = 100000
 	src := &countedRows{n: rows, honour: true}
 	set, err := flatTree(t, src).Open(nil)
@@ -103,10 +103,10 @@ func TestADeepWindowIsAskedForRatherThanWalkedTo(t *testing.T) {
 		t.Fatalf("it answered %d rows, want %d", got, want)
 	}
 	if got, want := out.lines[0], "row99990/0"; got != want {
-		t.Errorf("the window begins at %q, want %q", got, want)
+		t.Errorf("the Extent begins at %q, want %q", got, want)
 	}
 	if got, want := out.lines[9], "row99999/0"; got != want {
-		t.Errorf("the window ends at %q, want %q", got, want)
+		t.Errorf("the Extent ends at %q, want %q", got, want)
 	}
 	// And it says where it began, which is what a reader places them by.
 	if got := out.done.First; !got.Exact || got.N != rows-10 {
@@ -114,7 +114,7 @@ func TestADeepWindowIsAskedForRatherThanWalkedTo(t *testing.T) {
 	}
 
 	// **The cost.** The level was asked to begin at the position, and what crossed
-	// is the window and not the sequence.
+	// is the Extent and not the sequence.
 	if len(src.asked) != 1 {
 		t.Fatalf("the level was read %d times, want once", len(src.asked))
 	}
@@ -122,7 +122,7 @@ func TestADeepWindowIsAskedForRatherThanWalkedTo(t *testing.T) {
 		t.Errorf("the level was asked from row %d, want %d", got, rows-10)
 	}
 	if src.sent > 20 {
-		t.Errorf("%d records crossed to answer a window of ten", src.sent)
+		t.Errorf("%d records crossed to answer an Extent of ten", src.sent)
 	}
 }
 
@@ -144,7 +144,7 @@ func TestASourceThatWillNotJumpIsStillRight(t *testing.T) {
 	}
 	if got, want := strings.Join(out.lines, " "),
 		"row01997/0 row01998/0 row01999/0"; got != want {
-		t.Errorf("the window reads %q, want %q", got, want)
+		t.Errorf("the Extent reads %q, want %q", got, want)
 	}
 	if got := out.done.First; !got.Exact || got.N != rows-3 {
 		t.Errorf("the answer began at %v, want exactly %d", got, rows-3)
@@ -160,10 +160,10 @@ func TestASourceThatWillNotJumpIsStillRight(t *testing.T) {
 	}
 	if got, want := strings.Join(again.lines, " "),
 		"row01994/0 row01995/0 row01996/0"; got != want {
-		t.Errorf("the second window reads %q, want %q", got, want)
+		t.Errorf("the second Extent reads %q, want %q", got, want)
 	}
 	if got := len(src.asked) - asked; got != 1 {
-		t.Errorf("the second window cost %d reads of a source that will not jump,"+
+		t.Errorf("the second Extent cost %d reads of a source that will not jump,"+
 			" want one", got)
 	}
 }
@@ -212,20 +212,20 @@ func TestAnOpenNodeBelowStopsTheShortCut(t *testing.T) {
 	}
 }
 
-// --- what a window costs a reader that was holding a prefix ---------------
+// --- what an Extent costs a reader that was holding a prefix ---------------
 
 // **A floor does not come down.**
 //
-// What is held is a window, so a walk further down can hold FEWER rows than one
-// before it. A length taken from the window alone then shrinks as a reader scrolls
+// What is held is an Extent, so a walk further down can hold FEWER rows than one
+// before it. A length taken from the Extent alone then shrinks as a reader scrolls
 // -- a thumb that grows and jumps back, and a sequence that loses rows nobody
 // removed. A row seen once is a row that exists.
-func TestAFloorDoesNotComeDownAsTheWindowMovesOn(t *testing.T) {
+func TestAFloorDoesNotComeDownAsTheExtentMovesOn(t *testing.T) {
 	const rows = 500
 	src := &countedRows{n: rows, honour: true}
 	// **A tree nobody can count without walking it**, which is what leaves the
 	// length a floor at all: a top level that counts itself floors there whatever
-	// the window holds, and there is then no floor to come down. See reckon.go.
+	// the Extent holds, and there is then no floor to come down. See reckon.go.
 	tree := flatTree(t, uncounted{src})
 	set, err := tree.Open(nil)
 	if err != nil {
@@ -244,23 +244,23 @@ func TestAFloorDoesNotComeDownAsTheWindowMovesOn(t *testing.T) {
 
 	far := floor(300, 40) // reaches row 340
 	if far.Exact || far.N < 340 {
-		t.Fatalf("a window reaching row 340 floors at %v", far)
+		t.Fatalf("an Extent reaching row 340 floors at %v", far)
 	}
-	// A window somewhere else entirely, and nearer the top: the rows it holds say
+	// An Extent somewhere else entirely, and nearer the top: the rows it holds say
 	// nothing about the ones it saw and let go, and those rows are still there.
 	near := floor(100, 4)
 	if near.N < far.N {
-		t.Errorf("the floor fell from %v to %v as the window moved on", far, near)
+		t.Errorf("the floor fell from %v to %v as the Extent moved on", far, near)
 	}
 }
 
-// **And where a row stands is remembered past the window that showed it.**
+// **And where a row stands is remembered past the Extent that showed it.**
 //
 // A reader asks for what comes after a record it holds, and it holds rows the set
 // has since slid past. An index rebuilt each walk loses the one row the question is
 // about, and a scope that names a row nobody can place starts again at the top --
-// which is the window undone, and reads as a reader that cannot scroll.
-func TestARowsPlaceSurvivesTheWindowSlidingPastIt(t *testing.T) {
+// which is the Extent undone, and reads as a reader that cannot scroll.
+func TestARowsPlaceSurvivesTheExtentSlidingPastIt(t *testing.T) {
 	const rows = 500
 	src := &countedRows{n: rows, honour: true}
 	set, err := flatTree(t, src).Open(nil)
@@ -269,17 +269,17 @@ func TestARowsPlaceSurvivesTheWindowSlidingPastIt(t *testing.T) {
 	}
 	defer set.Close()
 
-	// A window at the top, and the last row of it is what the reader will name.
+	// An Extent at the top, and the last row of it is what the reader will name.
 	var first treeTook
 	if err := set.Read(&Scope{Count: 10}, &first); err != nil {
 		t.Fatal(err)
 	}
 	held := first.done.Watermark
 	if held == nil {
-		t.Fatal("the first window named no row to carry on from")
+		t.Fatal("the first Extent named no row to carry on from")
 	}
 
-	// The reader moves on, and the window slides away from that row.
+	// The reader moves on, and the Extent slides away from that row.
 	var moved treeTook
 	if err := set.Read(&Scope{From: 200, Count: 10}, &moved); err != nil {
 		t.Fatal(err)
@@ -305,7 +305,7 @@ func TestARowsPlaceSurvivesTheWindowSlidingPastIt(t *testing.T) {
 // **Two readers of one sequence are not one reader.**
 //
 // A view asks about the rows on screen and, a moment later, about a row somebody
-// dragged a thumb to. A window that simply replaced what was held would answer each
+// dragged a thumb to. An Extent that simply replaced what was held would answer each
 // by throwing the other's away, and the two asks would walk over each other for
 // ever -- neither ever there when it was looked for. What that reads as is a list
 // that will not scroll.
@@ -333,10 +333,10 @@ func TestARunThatTouchesWhatIsHeldJoinsIt(t *testing.T) {
 
 	// Both are answered now, and neither costs a walk: what is held covers them.
 	if got := read(0, 20); got.lines[0] != "row00000/0" {
-		t.Errorf("the first window reads %q", got.lines[0])
+		t.Errorf("the first Extent reads %q", got.lines[0])
 	}
 	if got := read(30, 4); got.lines[0] != "row00030/0" {
-		t.Errorf("the second window reads %q", got.lines[0])
+		t.Errorf("the second Extent reads %q", got.lines[0])
 	}
 	if len(src.asked) != walks {
 		t.Errorf("answering what was already held took %d more reads of the source",
@@ -376,12 +376,12 @@ func TestAWalkLandingElsewhereStartsAgain(t *testing.T) {
 	if err := set.Read(&Scope{From: 4000, Count: 20}, &out); err != nil {
 		t.Fatal(err)
 	}
-	// Nothing of the sequence between was read to get there: two windows of twenty
+	// Nothing of the sequence between was read to get there: two Extents of twenty
 	// and the spare row each answer carries, and nothing else.
 	if src.sent > 44 {
-		t.Errorf("%d records crossed for two windows of twenty", src.sent)
+		t.Errorf("%d records crossed for two Extents of twenty", src.sent)
 	}
 	if got := out.lines[0]; got != "row04000/0" {
-		t.Errorf("the far window begins at %q", got)
+		t.Errorf("the far Extent begins at %q", got)
 	}
 }

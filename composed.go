@@ -1119,8 +1119,8 @@ func (s *composedSet) blocks() bool { return len(s.descriptor.Sort) == 0 }
 // can count itself, the position falls in exactly one include and the rest
 // either start at an end or send nothing -- and the answer is a true run of the
 // sequence beginning where it was asked to. Anything less than that is refused
-// here rather than approximated, because the approximation is not a window a
-// little off: it is a window with HOLES.
+// here rather than approximated, because the approximation is not an Extent a
+// little off: it is an Extent with HOLES.
 //
 // A composition sorted by a field interleaves its includes by value, so giving
 // each of them the same fraction of its own records starts them at points that

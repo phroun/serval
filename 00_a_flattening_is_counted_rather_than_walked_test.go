@@ -2,7 +2,7 @@ package serval
 
 // How long a flattening is, worked out rather than walked.
 //
-// The claim is not that it is faster. It is that a reader holding a window of a
+// The claim is not that it is faster. It is that a reader holding an Extent of a
 // hundred thousand rows can be told how many there are -- so the thumb is true, the
 // end of the sequence is reachable, and neither of those waits for a walk nobody
 // asked for. See reckon.go for why it never needed the walk.
@@ -29,7 +29,7 @@ func TestALengthComesFromCountsRatherThanTheWalk(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got, want := strings.Join(out.lines, " "), "alpha/0"; got != want {
-		t.Fatalf("a window of one reads %q, want %q", got, want)
+		t.Fatalf("an Extent of one reads %q, want %q", got, want)
 	}
 	if got := out.done.Total; got != Exactly(2) {
 		t.Errorf("it says the sequence holds %v, want exactly the two top rows", got)
@@ -50,7 +50,7 @@ func TestAnOpenNodeAddsItsChildrenToTheLength(t *testing.T) {
 	}
 	defer set.Close()
 
-	window := func() RecordCount {
+	Extent := func() RecordCount {
 		t.Helper()
 		var out treeTook
 		if err := set.Read(&Scope{Count: 1}, &out); err != nil {
@@ -76,7 +76,7 @@ func TestAnOpenNodeAddsItsChildrenToTheLength(t *testing.T) {
 		if step.open != nil {
 			src.Expand(step.open...)
 		}
-		if got := window(); got != Exactly(step.want) {
+		if got := Extent(); got != Exactly(step.want) {
 			t.Errorf("with %v open it says %v, want exactly %d",
 				step.open, got, step.want)
 		}
@@ -91,7 +91,7 @@ func TestAnOpenNodeAddsItsChildrenToTheLength(t *testing.T) {
 
 // The headline: one root of fifty children, one of them open, four rows read. The
 // length is the lot, and no level was walked to find out.
-func TestAWindowOfAWideTreeStillKnowsItsLength(t *testing.T) {
+func TestAExtentOfAWideTreeStillKnowsItsLength(t *testing.T) {
 	src := treeOf(t, TreeOptions{
 		Source: wide(50),
 		Descriptor: &DataSetDescriptor{Filter: &Filter{
@@ -111,7 +111,7 @@ func TestAWindowOfAWideTreeStillKnowsItsLength(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(out.lines) != 4 {
-		t.Fatalf("the window holds %d rows", len(out.lines))
+		t.Fatalf("the Extent holds %d rows", len(out.lines))
 	}
 	if got := out.done.Total; got != Exactly(51) {
 		t.Errorf("it says the sequence holds %v, want exactly the root and its fifty",
@@ -405,7 +405,7 @@ func TestALengthOverAPathKeyedTreeIsCountedToo(t *testing.T) {
 	}
 	defer set.Close()
 
-	window := func() RecordCount {
+	Extent := func() RecordCount {
 		t.Helper()
 		var out treeTook
 		if err := set.Read(&Scope{Count: 1}, &out); err != nil {
@@ -415,17 +415,17 @@ func TestALengthOverAPathKeyedTreeIsCountedToo(t *testing.T) {
 	}
 
 	// `/usr` alone at the top.
-	if got := window(); got != Exactly(1) {
+	if got := Extent(); got != Exactly(1) {
 		t.Errorf("with nothing open it says %v, want exactly one", got)
 	}
 	// Opened: local and locally, which is two more.
 	src.Expand("/usr")
-	if got := window(); got != Exactly(3) {
+	if got := Extent(); got != Exactly(3) {
 		t.Errorf("with /usr open it says %v, want exactly three", got)
 	}
 	// And again: bin and share.
 	src.Expand("/usr", "/usr/local")
-	if got := window(); got != Exactly(5) {
+	if got := Extent(); got != Exactly(5) {
 		t.Errorf("with /usr/local open too it says %v, want exactly five", got)
 	}
 	if got := drawn(t, set, &Scope{Count: 100}); got !=
@@ -519,7 +519,7 @@ func TestAFloorIsAtLeastTheTopLevel(t *testing.T) {
 }
 
 // wideTop is `n` rows at the top with a child each, so the top level is large and a
-// small window sees almost none of it.
+// small Extent sees almost none of it.
 func wideTop(n int) *ListSource {
 	var rows []Row
 	for i := 0; i < n; i++ {
@@ -538,7 +538,7 @@ func wideTop(n int) *ListSource {
 //
 // The walk records the top level's figure for free, and that is usually enough. It is
 // not enough for a source across a connection: one cannot count until an answer has
-// told it how many there are, and by the time one has, the window is held and no walk
+// told it how many there are, and by the time one has, the Extent is held and no walk
 // happens to pick the figure up. A flattening that became countable would go on being
 // floored until somebody expanded something.
 func TestACountThatArrivesLateIsPickedUp(t *testing.T) {
@@ -560,7 +560,7 @@ func TestACountThatArrivesLateIsPickedUp(t *testing.T) {
 		t.Fatalf("before it would count it says %v, want a floor", got)
 	}
 
-	// Then it can, and nothing walks again: the window is held, so the read below
+	// Then it can, and nothing walks again: the Extent is held, so the read below
 	// answers out of what the first one flattened.
 	late.answer = true
 	var again treeTook

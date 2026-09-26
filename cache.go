@@ -485,7 +485,7 @@ func (c *cache) hold(ds dataSet, sc *Scope, recs []*cachedRecord, done Complete)
 	// guessed.
 	//
 	// The cost of getting this wrong is quiet and large. A source of a hundred
-	// thousand rows answering a window of eighty-eight, saying `filled` and naming no
+	// thousand rows answering an Extent of eighty-eight, saying `filled` and naming no
 	// watermark, was counted as a sequence of eighty-eight -- so every reader of it
 	// drew a true thumb over a figure that was wrong by three orders of magnitude.
 	edge := done.Watermark

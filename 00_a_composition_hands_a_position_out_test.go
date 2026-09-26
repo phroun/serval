@@ -144,7 +144,7 @@ func TestTheBlocksAreInNameOrderAndNotDeclarationOrder(t *testing.T) {
 //
 // The alternative is worse than being a little off. Halving each of 1,2,3 and
 // 100,200,300 to reach the fourth of six gives 2,3,200,300: it begins at the
-// second record, skips the fourth altogether, and reports neither. A window
+// second record, skips the fourth altogether, and reports neither. An Extent
 // with holes cannot be corrected by a reader that cannot see them.
 func TestASortedCompositionSharesNothingOut(t *testing.T) {
 	_, set := composedOver(t, &DataSetDescriptor{Sort: []SortLevel{{Field: "n"}}},

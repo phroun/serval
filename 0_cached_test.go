@@ -950,7 +950,7 @@ func TestAPlaceLeavesOutWhatTheQueryExcluded(t *testing.T) {
 // as reaching the end -- and a run bounded at neither end is read as the whole
 // sequence in one piece.
 //
-// The cost is quiet and large. A source of a thousand rows answering a window of
+// The cost is quiet and large. A source of a thousand rows answering an Extent of
 // three, saying `filled` and naming no watermark, was counted as a sequence of
 // three -- so every reader drew a true thumb against a figure wrong by a factor of
 // three hundred.
@@ -970,10 +970,10 @@ func TestAnAnswerThatStoppedShortIsNotTheWholeSequence(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(got.keys) != 3 {
-		t.Fatalf("the window holds %d rows", len(got.keys))
+		t.Fatalf("the Extent holds %d rows", len(got.keys))
 	}
 	if n := CountOf(set); n.Exact {
-		t.Errorf("after a window of three of a thousand it counts %v exactly; the"+
+		t.Errorf("after an Extent of three of a thousand it counts %v exactly; the"+
 			" answer said it had stopped short and named no watermark", n)
 	}
 
@@ -985,14 +985,14 @@ func TestAnAnswerThatStoppedShortIsNotTheWholeSequence(t *testing.T) {
 		t.Fatal(err)
 	}
 	if body.reads != was {
-		t.Errorf("the window was asked for again: %d reads became %d", was, body.reads)
+		t.Errorf("the Extent was asked for again: %d reads became %d", was, body.reads)
 	}
 	if len(again.keys) != 3 {
 		t.Errorf("reading it again holds %d rows", len(again.keys))
 	}
 }
 
-// quietStopper answers a window and says it stopped short WITHOUT saying where --
+// quietStopper answers an Extent and says it stopped short WITHOUT saying where --
 // which an application may do, and which says less than it could rather than more.
 type quietStopper struct {
 	n     int

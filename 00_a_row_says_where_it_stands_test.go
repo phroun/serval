@@ -239,7 +239,7 @@ func TestAChildTypeMayBringItsOwnSort(t *testing.T) {
 func TestARowThatSaysNothingGetsTheDefault(t *testing.T) {
 	def := &NodeType{Children: ChildrenByKey("parent")}
 	types := NodeTypes{Default: def, Field: "childType",
-		Named: map[string]*NodeType{"windows": {}}}
+		Named: map[string]*NodeType{"Extents": {}}}
 	// Beneath(nil, ...) is the top level, whose rows are the default kind.
 
 	if got := types.Beneath("", Node{Fields: Record{Named("kind", "file")}}); !onlyKind(got, "") {
@@ -264,7 +264,7 @@ func TestARowThatSaysNothingGetsTheDefault(t *testing.T) {
 	if got := types.Beneath("", Node{Fields: Record{Named("childType", false)}}); got != nil {
 		t.Error("a row naming false got a type")
 	}
-	if got := types.Beneath("", Node{Fields: Record{Named("childType", "windows")}}); !onlyKind(got, "windows") {
+	if got := types.Beneath("", Node{Fields: Record{Named("childType", "Extents")}}); !onlyKind(got, "Extents") {
 		t.Error("a row naming a registered type did not get it")
 	}
 }
@@ -281,7 +281,7 @@ func TestAnUnknownChildTypeNameIsALeaf(t *testing.T) {
 	types := NodeTypes{
 		Default: &NodeType{Children: ChildrenByKey("parent")},
 		Field:   "childType",
-		Named:   map[string]*NodeType{"windows": {}},
+		Named:   map[string]*NodeType{"Extents": {}},
 	}
 	if got := types.Beneath("", Node{Fields: Record{Named("childType", "windoows")}}); len(got) != 0 {
 		t.Errorf("a mistyped name got %v, want a leaf", got)
@@ -295,7 +295,7 @@ func TestAChildTypeSetIsChecked(t *testing.T) {
 	}
 	if err := (NodeTypes{
 		Default: &NodeType{},
-		Named:   map[string]*NodeType{"windows": {}},
+		Named:   map[string]*NodeType{"Extents": {}},
 	}).Check(); err == nil {
 		t.Error("named types with no field to name them in were accepted")
 	}

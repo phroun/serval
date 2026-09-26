@@ -512,12 +512,12 @@ func flatRows(n int) []Row {
 	return rows
 }
 
-// **A reader asking for a window asks the level for a window.** A level's FILTER
+// **A reader asking for an Extent asks the level for an Extent.** A level's FILTER
 // was always targeted -- the children of one node -- but it used to be read with a
 // count of everything, so a flat level of ten thousand answered ten thousand rows
 // to fill a screen of forty. No level can usefully answer more than the walk still
 // needs.
-func TestAWindowedReadAsksTheLevelForAWindow(t *testing.T) {
+func TestAExtentReadAsksTheLevelForOne(t *testing.T) {
 	far := &tally{ListSource: NewListSource(flatRows(10000))}
 	tree, err := NewTreeSource(TreeOptions{
 		Source: far,
@@ -542,7 +542,7 @@ func TestAWindowedReadAsksTheLevelForAWindow(t *testing.T) {
 	// One spare row past the budget, which is what tells "that is all" from "there
 	// is more" -- and nothing like the whole level.
 	if most := far.biggestAsk(); most > 41 {
-		t.Errorf("the level was asked for %d rows to fill a window of 40", most)
+		t.Errorf("the level was asked for %d rows to fill an Extent of 40", most)
 	}
 	// And the count is a FLOOR, because the walk stopped at what it was asked for
 	// rather than at the end of the tree.
