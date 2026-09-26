@@ -351,3 +351,51 @@ func (m *Marks) prune(chain []string) {
 		}
 	}
 }
+
+// Flat reports whether every node beneath this one is closed: what this node's
+// children inherit does not show, and nothing marked beneath it shows either.
+//
+// **It is what lets a descent ask a level for a POSITION.** Where every row of a
+// level stands for exactly one row of the flattening, the nth row of the level IS
+// the nth row of that subtree -- so the level can be entered at a position rather
+// than walked to it, and a reader a hundred thousand rows down costs one question
+// instead of a hundred thousand rows. One open node anywhere beneath breaks that:
+// its children stand between its siblings, and the arithmetic no longer holds.
+//
+// It walks the marks and not the tree. What is held here is bounded by what
+// somebody has TOUCHED, so this is a handful of nodes however large the sequence
+// is -- the same property that makes Showing worth having.
+func (m *Marks) Flat(chain ...string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	at, given := m.walk(chain)
+	here := given
+	if at != nil && at.set {
+		here = at.mark
+	}
+	// What the rows of this level inherit. Under an OpenAll every one of them
+	// shows, so no row stands for one.
+	if here.given().shows() {
+		return false
+	}
+	if at == nil {
+		return true // nothing is held beneath it, so nothing beneath it is open
+	}
+	return !opensSomething(at)
+}
+
+// opensSomething reports whether any mark held beneath this one shows.
+//
+// The node's own state is its caller's business: what is asked here is about
+// everything UNDER it, which is what stands between a level's rows.
+func opensSomething(at *marker) bool {
+	for _, kid := range at.kids {
+		if kid.set && kid.mark.shows() {
+			return true
+		}
+		if opensSomething(kid) {
+			return true
+		}
+	}
+	return false
+}

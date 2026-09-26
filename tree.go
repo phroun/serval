@@ -184,6 +184,10 @@ type TreeSource struct {
 	// level's. See SortBy.
 	order map[string][]SortLevel
 
+	// noJump says a level of this tree has answered from the beginning after being
+	// asked to begin somewhere else, so this tree stops asking. See jumps.
+	noJump bool
+
 	// tells are the readers of this tree, told when a flattening has COMPLETED.
 	//
 	// **A tree is Arriving in its own right, and that is the layering.** A level
@@ -276,6 +280,28 @@ func answersLater(o TreeOptions) bool {
 // own four verbs are the usual way, because they also tell the sequences that
 // what they hold has changed.
 func (t *TreeSource) Marks() *Marks { return &t.mark }
+
+// jumps reports whether this tree's levels have ever been seen to honour a
+// position, which they are taken to until one says otherwise.
+//
+// A source that walks its own body has no index into a sequence somebody else
+// named, so it answers from the beginning however it is asked. That is allowed --
+// `Scope.From` is best effort -- and it is a fact about the SOURCE rather than
+// about any one walk, so it is learned once and remembered. The cost of learning it
+// is one read; the cost of not remembering it would be one per walk for ever.
+func (t *TreeSource) jumps() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return !t.noJump
+}
+
+// sawNoJump records that a level answered from the beginning after being asked to
+// begin somewhere else.
+func (t *TreeSource) sawNoJump() {
+	t.mu.Lock()
+	t.noJump = true
+	t.mu.Unlock()
+}
 
 // Expand, ExpandAll, Collapse and CollapseAll are the mark verbs, and each tells
 // every live sequence afterwards.
@@ -512,14 +538,49 @@ type treeDataSet struct {
 	topCount RecordCount
 	counts   map[*NodeType]*Census
 
-	// budget is how many rows the last walk was asked for, and `whole` says it ran
-	// out of TREE before it ran out of budget -- so what is held is the lot.
+	// base is where the rows this set holds BEGIN: the flat position of the first
+	// of them, and nought for a walk that started at the top.
+	//
+	// **A flattening is a window now, not a prefix.** A reader a hundred thousand
+	// rows down is answered by a walk that skipped to there, so what is held is a
+	// stretch of the sequence rather than the front of it, and every position here
+	// -- the index, a scope's `from`, the `first` an answer reports -- is the
+	// position in the SEQUENCE and not the offset into the slice.
+	base int
+
+	// from is where the last walk was asked to begin and budget is how many rows it
+	// was asked to keep; `whole` says it ran out of TREE before it ran out of
+	// budget -- so what is held reaches the end of the sequence.
 	//
 	// **That is the difference between an exact count and a floor.** A flattening
 	// that stopped because it had what it came for knows there may be more; one
 	// that stopped because there was no more knows there is not.
+	from   int
 	budget int
 	whole  bool
+
+	// reshaped says the flattening changed SHAPE under the rows this set is
+	// holding -- a mark moved, or a source said what has stopped being true -- so
+	// they belong to a sequence that no longer exists. They are kept until the next
+	// walk lands, because a view drawing the old rows for a moment is better than
+	// one drawing nothing, and they are dropped when it does rather than joined to
+	// what it brings: two shapes joined would read as one sequence holding rows
+	// twice.
+	reshaped bool
+
+	// seen is the furthest this set has ever reached: the position past the last
+	// row any walk of it has produced.
+	//
+	// **A floor must not come down.** What is held is a window now, so a walk
+	// further down can hold FEWER rows than one before it, and a length taken from
+	// the window alone would shrink as a reader scrolled -- a thumb that grew and
+	// then jumped back, and a sequence that lost rows nobody removed. A row seen
+	// once is a row that exists, so the floor is the furthest anybody has been.
+	//
+	// It is reset when the flattening changes SHAPE -- a mark moved, or a source
+	// saying what has stopped being true -- because then the rows it stands on may
+	// not be there any more. Told, not decided, like everything else here.
+	seen int
 }
 
 // needs is how many flattened rows a scope requires before it can be answered.
@@ -530,23 +591,41 @@ type treeDataSet struct {
 //
 // **Asking for an enormous count is a reader saying it wants the whole thing**,
 // which is what every reader of a tree did before there was any other way to ask.
-func (v *treeDataSet) needs(s *Scope) int {
+func (v *treeDataSet) needs(s *Scope) (from, count int) {
 	if s == nil || s.Count <= 0 {
-		return 0
+		return 0, 0
 	}
-	from := 0
 	switch {
 	case s.From > 0:
 		from = s.From
 	case s.After != nil:
+		// **A row this set does not hold names no position here.** It may be above
+		// the window or below it, and the flattening is the only thing that knows
+		// which -- so the walk starts again at the top, which is where it can be
+		// found. A reader stepping through what it holds never reaches this.
 		if at, ok := v.at[Key(s.After)]; ok {
 			from = at + 1
 		}
 	}
 	if s.Count >= everyRow-from {
-		return everyRow
+		return from, everyRow
 	}
-	return from + s.Count
+	return from, s.Count
+}
+
+// holds reports whether the rows this set has cover the window a scope wants.
+//
+// Called under the lock.
+func (v *treeDataSet) holds(from, count int) bool {
+	if from < v.base {
+		return false
+	}
+	if from+count <= v.base+len(v.rows) {
+		return true
+	}
+	// The walk ran out of tree, so there is nothing past what is held: a window
+	// reaching beyond the end is answered by the end.
+	return v.whole
 }
 
 func (v *treeDataSet) Close() {
@@ -571,15 +650,22 @@ func (v *treeDataSet) Close() {
 // every reader of a tree did before there was another way to ask.
 func (v *treeDataSet) RecordCount() RecordCount {
 	v.mu.Lock()
-	closed, whole, held := v.at == nil, v.whole, len(v.rows)
+	closed, whole, held := v.at == nil, v.whole, v.seen
+	if end := v.base + len(v.rows); end > held {
+		held = end
+	}
+	if whole {
+		held = v.base + len(v.rows)
+	}
 	v.mu.Unlock()
 
 	switch {
 	case closed:
 		return Unknown()
 	case whole:
-		// The walk ran out of tree, so what it holds IS the sequence. Nothing
-		// beats having seen the end of it.
+		// The walk ran out of tree, so its last row is the sequence's last row --
+		// and the position of that row is what the sequence is long. Nothing beats
+		// having seen the end of it.
 		return Exactly(held)
 	}
 	// **A walk that stopped short can still be counted, and usually can.** See
@@ -599,20 +685,24 @@ func (v *treeDataSet) RecordCount() RecordCount {
 // further than it has been pays for the difference.
 func (v *treeDataSet) reach(s *Scope) error {
 	v.mu.Lock()
-	if v.at == nil || v.whole {
+	if v.at == nil {
 		v.mu.Unlock()
 		return nil
 	}
-	need := v.needs(s)
-	if need <= len(v.rows) || need <= v.budget {
+	from, count := v.needs(s)
+	if v.holds(from, count) {
 		v.mu.Unlock()
 		return nil
 	}
-	v.budget = need
+	// One already in flight for this window, which will tell when it lands.
+	if v.walking && from >= v.from && from+count <= v.from+v.budget {
+		v.mu.Unlock()
+		return nil
+	}
+	v.from, v.budget = from, count
 	walking := v.walking
 	v.mu.Unlock()
 	if walking {
-		// One in flight already, and it will tell when it lands.
 		return nil
 	}
 	return v.build()
@@ -622,6 +712,14 @@ func (v *treeDataSet) reach(s *Scope) error {
 func (v *treeDataSet) rebuild() {
 	v.mu.Lock()
 	closed := v.at == nil
+	// The shape changed, so how far anybody has been says nothing about how long
+	// this is any more, and where a row stood says nothing about where it stands.
+	// See treeDataSet.seen.
+	v.seen = 0
+	if !closed {
+		v.at = map[string]int{}
+		v.reshaped = true
+	}
 	v.mu.Unlock()
 	if closed {
 		return
@@ -687,10 +785,10 @@ func (v *treeDataSet) build() error {
 // walk is the flattening itself, wherever it is being done.
 func (v *treeDataSet) walk() error {
 	v.mu.Lock()
-	budget := v.budget
+	from, budget := v.from, v.budget
 	v.mu.Unlock()
 
-	d := &descent{set: v, tree: v.tree, want: budget, left: budget}
+	d := &descent{set: v, tree: v.tree, want: budget, left: budget, skip: from}
 	// The top level's rows are of the default kind, read out of the tree's own
 	// source by the tree's own descriptor.
 	top := v.tree.opt.Types.Default
@@ -705,19 +803,84 @@ func (v *treeDataSet) walk() error {
 		v.whole = false
 		return err
 	}
-	// It ran out of TREE before it ran out of budget, so this is the lot -- which
-	// is what makes the count exact rather than a floor.
-	v.whole = !d.enough()
-	v.rows = d.rows
+	// It ran out of TREE before it ran out of budget, so what it holds reaches the
+	// end -- which is what makes the count exact rather than a floor.
+	//
+	// **Where these rows begin.** Every row before the window was passed over, so
+	// what is left of the skip is what the tree ran out before reaching: a walk that
+	// skipped the lot holds nothing and begins at the end of the sequence.
+	if v.reshaped {
+		// The rows held are of a shape that is gone. This walk is the new one.
+		v.rows, v.base, v.whole, v.reshaped = nil, 0, false, false
+	}
+	// Where THIS walk's rows begin, which is not where the joined run begins: the
+	// rows below it were already held, and their positions were written down then.
+	began := from - d.skip
+	v.join(began, d.rows, !d.enough())
+	if end := v.base + len(v.rows); end > v.seen {
+		v.seen = end
+	}
 	// What the walk learned on the way, which `reckon` needs and which no separate
 	// question has to be asked for. Both go stale when the DATA changes, and a
 	// source saying so is what brings the walk round again.
 	v.topCount, v.counts = d.topCount, d.counts
-	v.at = make(map[string]int, len(d.rows))
+	// **Where a row stands is remembered past the window that showed it.** A reader
+	// asks for what comes after a record it holds, and it holds rows this set has
+	// since slid past -- so an index rebuilt each walk would lose the one row the
+	// question was about and send the walk back to the top, which is the window
+	// undone. What it costs is an entry per row anybody has actually been shown:
+	// a reader that jumped to row ninety-nine thousand was shown ten of them.
+	//
+	// It is thrown away when the SHAPE changes, with `seen`, for the same reason:
+	// a position is a fact about one flattening.
+	if v.at == nil {
+		v.at = make(map[string]int, len(d.rows))
+	}
 	for i, r := range d.rows {
-		v.at[Key(r.id)] = i
+		v.at[Key(r.id)] = began + i
 	}
 	return nil
+}
+
+// join puts a walk's rows together with what this set already held.
+//
+// **Two readers of one sequence are not one reader.** A view asks about the rows on
+// screen and, a moment later, about a row somebody dragged a thumb to -- and a
+// window that simply REPLACED what was held would answer each by throwing away the
+// other's, so the two asks walk over each other for ever and neither is ever there
+// when it is looked for. That is not a hypothetical: it is a list that will not
+// scroll.
+//
+// So a run that touches what is held joins it, and only a walk landing somewhere
+// else entirely starts again. What that costs is what the old flattening always
+// cost -- the rows between, held -- and it is paid only where a reader really is
+// reading both. A jump to the far end of a hundred thousand still lands on its own.
+//
+// Called with the lock held.
+func (v *treeDataSet) join(base int, rows []treeRow, whole bool) {
+	end, was, wasEnd := base+len(rows), v.base, v.base+len(v.rows)
+	switch {
+	case len(v.rows) == 0 || len(rows) == 0:
+		// Nothing to join to, or nothing to join: the walk stands as it is.
+	case base >= was && base <= wasEnd:
+		// It begins inside what is held, or just past the end of it, so what is
+		// held above it stands and this run carries on from there.
+		if end < wasEnd {
+			// Held rows reach further than this run, so the end is still theirs.
+			whole = v.whole
+			rows = append(rows, v.rows[end-was:]...)
+		}
+		rows = append(append([]treeRow{}, v.rows[:base-was]...), rows...)
+		base = was
+	case end >= was && end <= wasEnd:
+		// It ends inside what is held, so this run leads into it.
+		whole = v.whole
+		rows = append(rows, v.rows[end-was:]...)
+	case base < was && end > wasEnd:
+		// It covers what was held whole, and is the better answer for every row of
+		// it: nothing of the old run is worth keeping.
+	}
+	v.base, v.rows, v.whole = base, rows, whole
 }
 
 // Read produces one scope of the flattened sequence.
@@ -737,7 +900,7 @@ func (v *treeDataSet) Read(s *Scope, out Sink) error {
 	}
 
 	v.mu.Lock()
-	rows, at, buildErr, whole := v.rows, v.at, v.err, v.whole
+	rows, at, buildErr, whole, base := v.rows, v.at, v.err, v.whole, v.base
 	v.mu.Unlock()
 
 	if at == nil {
@@ -752,9 +915,13 @@ func (v *treeDataSet) Read(s *Scope, out Sink) error {
 		return nil
 	}
 
-	step, i := 1, 0
+	// Positions here are the SEQUENCE's, and the rows held are a window of it: `i`
+	// walks positions and `i-base` is where to find one. A window that begins at
+	// nought, which is every walk that was not asked to start elsewhere, makes the
+	// two the same number and this reads as it always did.
+	step, i := 1, base
 	if s.Reversed {
-		step, i = -1, len(rows)-1
+		step, i = -1, base+len(rows)-1
 	}
 	if s.After != nil {
 		j, ok := at[Key(s.After)]
@@ -767,11 +934,11 @@ func (v *treeDataSet) Read(s *Scope, out Sink) error {
 		i = j + step
 	} else if s.From != 0 {
 		i = s.From
-		if i < 0 {
-			i = 0
+		if i < base {
+			i = base
 		}
-		if i >= len(rows) {
-			i = len(rows) - 1
+		if i >= base+len(rows) {
+			i = base + len(rows) - 1
 		}
 	}
 
@@ -792,11 +959,10 @@ func (v *treeDataSet) Read(s *Scope, out Sink) error {
 	// It is RecordCount's own answer and not a second arithmetic, because the two
 	// are one claim about one walk and a reader that asked cannot be told something
 	// different from a reader that asks separately.
-	_ = whole
 	done := Complete{Total: v.RecordCount()}
 	last := s.After
 	sent := 0
-	for ; i >= 0 && i < len(rows); i += step {
+	for ; i >= base && i < base+len(rows); i += step {
 		if i == stop {
 			done.Stop = StopJoined
 			break
@@ -811,17 +977,30 @@ func (v *treeDataSet) Read(s *Scope, out Sink) error {
 		// Entire, because the flattening read whole records and added to them.
 		// When the window is read lazily instead, this is the line that has to
 		// learn to say Subset.
-		if err := out.Record(rows[i].id, rows[i].fields); err != nil {
+		if err := out.Record(rows[i-base].id, rows[i-base].fields); err != nil {
 			return err
 		}
-		last = rows[i].id
+		last = rows[i-base].id
 		sent++
 	}
 
-	if done.Stop == "" {
-		done.Stop = StopExhausted
-	} else {
+	switch {
+	case done.Stop != "":
 		done.Watermark = last
+	case whole:
+		// The walk saw the end of the tree, so the end of what it holds is the end
+		// of the sequence: there is nothing past this.
+		done.Stop = StopExhausted
+	case last != nil:
+		// **The WINDOW ran out, and the sequence did not.** Saying exhausted here
+		// is the one thing that must not be said -- a reader told there is nothing
+		// past the rows it just got stops asking, which is a list that ends
+		// wherever the last walk happened to stop. What is true is that this run
+		// reaches the watermark and there is more beyond it.
+		done.Stop = StopFilled
+		done.Watermark = last
+	default:
+		done.Stop = StopExhausted
 	}
 	out.Done(done)
 	return nil
@@ -848,6 +1027,17 @@ type descent struct {
 	// level is read with, and a walk that has what it came for stops asking.
 	want int
 	left int
+
+	// skip is how many rows of the flattening are still to be passed over before
+	// the first one this walk keeps.
+	//
+	// **A window of a tree begins somewhere.** A reader a hundred thousand rows
+	// down does not want the hundred thousand above it, and the walk that produced
+	// them held every one. So the rows before the window are counted rather than
+	// kept -- and where a level can prove each of its rows stands for exactly one
+	// row of the flattening, they are not even read: the skip becomes that level's
+	// `Scope.From` and the source is asked to begin there. See Marks.Flat.
+	skip int
 
 	// counts is one census per node type, taken when a twisty first needs one
 	// and kept for the rest of this build. A nil value means it was tried and
@@ -917,15 +1107,47 @@ func (d *descent) level(kind string, src Source, descriptor *DataSetDescriptor, 
 		// The top level, counted while its set is open. See descent.topCount.
 		d.topCount = CountOf(set)
 	}
-	got := newLevelRows()
-	err = set.Read(&Scope{Count: d.ask()}, got)
-	if err == nil {
-		got.wait()
+	// **Where every row of this level stands for exactly one row of the
+	// flattening, the level is entered at the position rather than walked to it.**
+	// One open node anywhere beneath breaks the arithmetic -- its children stand
+	// between its siblings -- and Marks.Flat is that question asked of the marks
+	// rather than of the tree.
+	at := 0
+	if d.skip > 0 && d.tree.jumps() && d.tree.mark.Flat(chain...) {
+		at = d.skip
 	}
-	set.Close()
+	got, err := d.read(set, at)
 	if err != nil {
+		set.Close()
 		return err
 	}
+	// **What the source passed over on this walk's behalf.** `From` is best effort:
+	// a source that would not jump answers from the beginning and says so, and then
+	// the rows it did not send are rows this walk still has to pass over itself --
+	// so it is asked again, for the stretch it will actually answer.
+	//
+	// Once. Which sources will jump is a fact about the source rather than about
+	// this walk, so it is remembered: the one that will not pays this retry the
+	// first time a reader jumps and never again.
+	if at > 0 {
+		began := got.began()
+		if began > at {
+			set.Close()
+			return fmt.Errorf(
+				"tree: a level asked to begin at row %d answered from row %d,"+
+					" and its rows cannot be placed", at, began)
+		}
+		if began < at {
+			d.tree.sawNoJump()
+			if got, err = d.read(set, 0); err != nil {
+				set.Close()
+				return err
+			}
+			began = got.began()
+		}
+		d.skip -= began
+	}
+	set.Close()
 	ids, fields1, readErr := got.reading()
 	if readErr != "" {
 		return fmt.Errorf("tree: reading a level: %s", readErr)
@@ -996,6 +1218,20 @@ func (d *descent) level(kind string, src Source, descriptor *DataSetDescriptor, 
 	return nil
 }
 
+// read takes one level, entered at a position or at the beginning.
+//
+// **Read, then WAIT.** A source holding its records has filled the sink and called
+// Done on the way out, so the wait returns at once; one across a connection has only
+// sent a question, and the answer comes later on whatever thread brings it.
+func (d *descent) read(set DataSet, at int) (*levelRows, error) {
+	got := newLevelRows()
+	if err := set.Read(&Scope{From: at, Count: d.ask(at)}, got); err != nil {
+		return nil, err
+	}
+	got.wait()
+	return got, nil
+}
+
 // ask is how many rows to read a level with: what this walk still needs.
 //
 // **One more than it needs, deliberately.** A level that answers exactly the
@@ -1005,14 +1241,19 @@ func (d *descent) level(kind string, src Source, descriptor *DataSetDescriptor, 
 //
 // A walk with no budget asks for everything, which is what a reader wanting the
 // whole sequence gets: `Read` with an enormous count is a reader saying so.
-func (d *descent) ask() int {
+func (d *descent) ask(skipped int) int {
 	if d.want <= 0 || d.left <= 0 {
 		return everyRow
 	}
-	if d.left >= everyRow-1 {
+	// What is still to be passed over counts too, for a level that cannot be entered
+	// at a position: its rows have to arrive to be counted. What the SOURCE is
+	// passing over does not -- that is the whole saving, and asking for it anyway
+	// would hand back the rows the position was meant to skip.
+	need := d.left + d.skip - skipped
+	if need >= everyRow-1 || need < 0 {
 		return everyRow
 	}
-	return d.left + 1
+	return need + 1
 }
 
 // enough reports whether this walk has what it was asked for, so the descent can
@@ -1184,6 +1425,14 @@ func (d *descent) emit(of Node, kind string, depth int, state Mark, children Rec
 		out = append(out, Named(f.Expandable, nil))
 	}
 
+	// **Before the window, so counted and not kept.** The row is a row of the
+	// flattening either way -- that is what makes it a position -- but nobody is
+	// going to look at it, so nothing is held for it.
+	if d.skip > 0 {
+		d.skip--
+		return
+	}
+
 	id := of.Key
 	if d.tree.opt.ByPath {
 		id = NewText(of.Path)
@@ -1208,6 +1457,13 @@ type levelRows struct {
 	fields []Record
 	err    string
 
+	// first is where the answer BEGAN, which matters only to a level that was
+	// asked to begin somewhere. `Scope.From` is best effort -- a source honours it
+	// as well as it can and says where it actually started -- so this is what tells
+	// a descent whether the rows it was handed are the ones it skipped to or the
+	// ones from the beginning. See descent.skip.
+	first RecordCount
+
 	done bool
 	over chan struct{} // closed once, when Done comes
 }
@@ -1229,7 +1485,7 @@ func (l *levelRows) Done(c Complete) {
 		l.mu.Unlock()
 		return
 	}
-	l.done, l.err = true, c.Error
+	l.done, l.err, l.first = true, c.Error, c.First
 	l.mu.Unlock()
 	close(l.over)
 }
@@ -1256,6 +1512,18 @@ func (l *levelRows) reading() (ids []*Value, fields []Record, err string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.ids, l.fields, l.err
+}
+
+// began is the position this level's answer started at, and nought where it said
+// nothing: a source that did not say is a source that started at the beginning,
+// which is the one thing an unanswered `from` can safely be read as.
+func (l *levelRows) began() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.first.Exact {
+		return 0
+	}
+	return l.first.N
 }
 
 // A TreeFielded source says what names it writes its tree fields under.
